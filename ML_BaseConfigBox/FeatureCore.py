@@ -194,7 +194,7 @@ class FeatureCore:
                 print("⚠️ All target column names must be strings ‼️")
                 return None
             cleaned_target_columns = [
-                col.strip() for col in target_column if col.strip()
+                col.strip() for col in target_column if col.strip() # Turn selelcted columns into list format
             ]
         else:
             print("⚠️ Target column must be a string or list of strings ‼️")
@@ -220,7 +220,7 @@ class FeatureCore:
 
         # ---------- Store targets ----------
         self.target_column = cleaned_target_columns
-        self.y = self.target_data[self.target_column]
+        self.y = self.target_data[self.target_column] # Get target data columns and set as Y variable
 
         print(
             f"\n🔥 Target column(s) set successfully ---> {self.target_column}\n{'-'*100}"
@@ -281,7 +281,7 @@ class FeatureCore:
 
         # ---------- Record feature columns as cleaned feature columns ----------
         cleaned_feature_columns = [
-            col.strip() for col in feature_columns if col.strip()
+            col.strip() for col in feature_columns if col.strip() # Turn selelcted columns into list format 
         ]
 
         # ---------- Validate cleaned feature columns ----------
@@ -315,7 +315,7 @@ class FeatureCore:
                 return None
 
         self.feature_columns = cleaned_feature_columns
-        self.X = self.target_data[self.feature_columns]
+        self.X = self.target_data[self.feature_columns] # Get target data columns and set as X variable
 
         print(
             f"🔥 Feature columns set successfully ---> {self.feature_columns}\n{'-'*100}"
