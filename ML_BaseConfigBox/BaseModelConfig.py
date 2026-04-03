@@ -517,6 +517,7 @@ class BaseModelConfig(ABC):
         y = self.cleaned_Y_data
         use_stratify = None
 
+        # ---------- Stratify applied ----------
         if (
             self.task == "classification"
             and stratify
@@ -762,19 +763,22 @@ class BaseModelConfig(ABC):
         if self.X_train is None or self.Y_train is None:
             raise ValueError("⚠️ Run train_test_split_engine() before training ‼️")
 
+        # ---------- Setup preprocess ----------
         preprocess = self.build_preprocessor(cat_encoder=cat_encoder)
 
+        # ---------- Setup step to pipeline ----------
         steps = [("preprocess", preprocess)]
-
-        if extra_steps:
+ 
+        if extra_steps: # Extra steps
             steps.extend(extra_steps)
 
         steps.append((self.step_name, base_model))
-        pipe = Pipeline(steps=steps)
+        pipe = Pipeline(steps=steps) # Final pipeline
 
         best_params = None
         best_score = None
 
+        # ---------- CV application ----------
         if use_cv:
             is_multi = self._is_multi_output(self.Y_train)
 
@@ -792,6 +796,7 @@ class BaseModelConfig(ABC):
                     random_state=split_random_state,
                 )
 
+                # ---------- Multiple output scoring methods ----------
                 if is_multi:
                     if self.task == "classification":
                         scoring_for_cv = self._build_multioutput_classification_scorer(
@@ -806,6 +811,7 @@ class BaseModelConfig(ABC):
                 else:
                     scoring_for_cv = scoring
 
+            # ---------- CV training ----------
             gs = GridSearchCV(
                 estimator=pipe,
                 param_grid=param_grid or {},
@@ -819,6 +825,7 @@ class BaseModelConfig(ABC):
             best_params = gs.best_params_
             best_score = gs.best_score_
 
+            # ---------- CV report saved as CSV file ----------
             cv_results_df = pd.DataFrame(gs.cv_results_)
             top_cv_results = (
                 cv_results_df[
@@ -840,11 +847,12 @@ class BaseModelConfig(ABC):
 
             self.save_cv_search_report()
 
+        # ---------- Training original model only ----------
         else:
             pipe.fit(self.X_train, self.Y_train)
             self.model_pipeline = pipe
 
-        self._extract_feature_names()
+        self._extract_feature_names() # Get feature name
 
         return best_params, best_score
 
@@ -932,23 +940,26 @@ class BaseModelConfig(ABC):
             self.feature_names = None
             return
 
+        # ---------- Check preprocess executed ----------
         pre = self.model_pipeline.named_steps.get("preprocess", None)
         if pre is None:
             self.feature_names = None
             return
 
+        # ---------- Extract method ----------
         try:
             if hasattr(pre, "get_feature_names_out"):
                 names = pre.get_feature_names_out()
                 if names is not None:
                     names = list(names)
-                    if all(re.match(r"^[a-zA-Z]\d+$", str(n)) for n in names):
+                    if all(re.match(r"^[a-zA-Z]\d+$", str(n)) for n in names): # Check generic feature name
                         raise ValueError("⚠️ generic feature names ‼️")
 
                     self.feature_names = names
                     return
             raise ValueError("⚠️ no usable feature names ‼️")
 
+        # ---------- Backup method-1 ----------
         except Exception:
             num_cols = getattr(self, "_numeric_cols", None)
             cat_cols = getattr(self, "_categorical_cols", None)
@@ -972,6 +983,8 @@ class BaseModelConfig(ABC):
                     names_out.extend(list(cat_cols))
 
                 self.feature_names = names_out
+            
+            # ---------- Backup method-2 ----------
             except Exception:
                 self.feature_names = list(num_cols) + list(cat_cols)
 
