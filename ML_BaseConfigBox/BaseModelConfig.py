@@ -768,12 +768,12 @@ class BaseModelConfig(ABC):
 
         # ---------- Setup step to pipeline ----------
         steps = [("preprocess", preprocess)]
- 
-        if extra_steps: # Extra steps
+
+        if extra_steps:  # Extra steps
             steps.extend(extra_steps)
 
         steps.append((self.step_name, base_model))
-        pipe = Pipeline(steps=steps) # Final pipeline
+        pipe = Pipeline(steps=steps)  # Final pipeline
 
         best_params = None
         best_score = None
@@ -852,7 +852,7 @@ class BaseModelConfig(ABC):
             pipe.fit(self.X_train, self.Y_train)
             self.model_pipeline = pipe
 
-        self._extract_feature_names() # Get feature name
+        self._extract_feature_names()  # Get feature name
 
         return best_params, best_score
 
@@ -952,7 +952,9 @@ class BaseModelConfig(ABC):
                 names = pre.get_feature_names_out()
                 if names is not None:
                     names = list(names)
-                    if all(re.match(r"^[a-zA-Z]\d+$", str(n)) for n in names): # Check generic feature name
+                    if all(
+                        re.match(r"^[a-zA-Z]\d+$", str(n)) for n in names
+                    ):  # Check generic feature name
                         raise ValueError("⚠️ generic feature names ‼️")
 
                     self.feature_names = names
@@ -983,7 +985,7 @@ class BaseModelConfig(ABC):
                     names_out.extend(list(cat_cols))
 
                 self.feature_names = names_out
-            
+
             # ---------- Backup method-2 ----------
             except Exception:
                 self.feature_names = list(num_cols) + list(cat_cols)
