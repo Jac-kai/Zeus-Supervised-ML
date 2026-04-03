@@ -118,7 +118,7 @@ MODEL_PARAM_CONFIG = {
         },
         {
             "name": "p",
-            "label": "📐 Distance Power p",
+            "label": "📐 Distance Type (1=Manhattan, 2=Euclidean)",
             "options": {
                 1: 1,
                 2: 2,
@@ -196,7 +196,7 @@ MODEL_PARAM_CONFIG = {
         },
         {
             "name": "p",
-            "label": "📐 Distance Power p",
+            "label": "📐 Distance Type (1=Manhattan, 2=Euclidean)",
             "options": {
                 1: 1,
                 2: 2,
