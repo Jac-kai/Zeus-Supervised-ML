@@ -34,7 +34,8 @@ It includes:
 - Automatically use all non-target columns when feature columns are not manually specified
 - Support both **classification** and **regression** tasks
 - Modular engine-based workflow design
-- Built-in evaluation and plotting functions
+- Built-in evaluation, diagnostic, and plotting functions
+- Support train/test selection for ROC and Precision-Recall plots
 - Save and reload trained models
 - Logging support for workflow tracking and debugging
 
@@ -62,12 +63,15 @@ Depending on the selected model and task type, Zeus supports evaluation and visu
 
 - Confusion Matrix
 - ROC Curve
+- Precision-Recall Curve
+- Decision Function Distribution (SVC classification)
 - Tree Plot
-- Prediction Analysis
 - Regression Diagnostics
 - Residual-related plots
 
-These tools help users better understand model performance and interpret prediction results.
+For classification plotting workflows, Zeus also supports selecting either the training split or the testing split when generating ROC and Precision-Recall curves.
+
+These tools help users better understand model performance, compare classification behavior across dataset splits, and interpret prediction results more clearly.
 
 ---
 

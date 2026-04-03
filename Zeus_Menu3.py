@@ -122,6 +122,75 @@ def _select_multioutput_target_col(zeus: ZeusEngine) -> tuple[str | None, bool]:
     return target_col, True
 
 
+# -------------------- Helper: select dataset split for plot --------------------
+def _select_plot_dataset() -> str | None:
+    """
+    Select the dataset split used for classifier evaluation plots.
+
+    This helper displays a small terminal menu that lets the user choose
+    whether a plot should be generated from the training split or the testing
+    split. The selected value is returned as a string and can be passed
+    directly to model-layer plotting methods such as ROC or Precision-Recall
+    curve engines.
+
+    Supported dataset values are:
+
+    - ``"train"``
+    - ``"test"``
+
+    If the user cancels the selection or enters an invalid menu number, the
+    helper returns ``None`` so the caller can stop the plotting workflow
+    gracefully.
+
+    Returns
+    -------
+    str or None
+        Selected dataset split.
+
+        - Returns ``"train"`` when the training split is selected.
+        - Returns ``"test"`` when the testing split is selected.
+        - Returns ``None`` when the selection is cancelled or invalid.
+
+    Side Effects
+    ------------
+    - Prints a dataset-selection menu in the terminal.
+    - Logs selection, cancellation, and invalid-input events.
+
+    Notes
+    -----
+    This helper is intended for classifier plotting menus that support both
+    training-set and testing-set visualization, such as:
+
+    - ROC curve plots
+    - Precision-Recall curve plots
+
+    The default selection is the testing split because evaluation plots are
+    most commonly interpreted on unseen data.
+    """
+    dataset_menu = {
+        1: "train",
+        2: "test",
+    }
+
+    print("---------- 🔥 Dataset Split 🔥 ----------")
+    print("🍒 1. train")
+    print("🍒 2. test")
+
+    selected_num = input_int("🎯 Select dataset split", default=2)
+    if selected_num is None:
+        logger.info("Dataset split selection cancelled")
+        return None
+
+    if selected_num not in dataset_menu:
+        logger.warning("Dataset split selection failed: invalid selection %s", selected_num)
+        print("⚠️ Invalid dataset split selection ‼️")
+        return None
+
+    dataset = dataset_menu[selected_num]
+    logger.info("Selected dataset split: %s", dataset)
+    return dataset
+
+
 # -------------------- Show evaluation result menu --------------------
 @menu_wrapper("Show Evaluation Result")
 def show_evaluation_result_menu(zeus: ZeusEngine):
@@ -642,19 +711,33 @@ def roc_curve_plot_menu(zeus: ZeusEngine):
     Plot the ROC curve for the current classifier model.
 
     This menu function dispatches ``roc_curve_plot_engine`` through the active
-    ``ZeusEngine`` model-method interface using the test dataset.
+    ``ZeusEngine`` model-method interface using the dataset split selected by
+    the user.
 
-    For single-output classification, the workflow runs directly without requesting
-    a target column.
+    Workflow
+    --------
+    1. Confirm that a current model is available.
+    2. Prompt the user to choose the dataset split through
+       ``_select_plot_dataset()``.
+    3. If the active workflow is multi-output classification, prompt the user
+       to select a target column through
+       ``_select_multioutput_target_col(zeus)``.
+    4. Dispatch ``roc_curve_plot_engine`` with:
 
-    For multi-output classification, the function first calls
-    ``_select_multioutput_target_col(zeus)`` to let the user choose a target
-    column. The selected target is then passed to the underlying ROC plotting
-    method as ``target_col``.
+       - ``dataset=<selected split>``
+       - ``target_col=<selected column or None>``
 
-    If no current model is available, or if the active model does not support ROC
-    curve plotting, the function prints a warning message and exits gracefully.
-    When successful, the returned ROC summary is displayed using ``pprint``.
+    Single-output classification
+        The ROC workflow runs directly with ``target_col=None``.
+
+    Multi-output classification
+        The user must choose one target column first. The ROC curve is then
+        generated only for that selected target.
+
+    If no current model is available, if dataset selection is cancelled, if a
+    required target column is not selected, or if the active model does not
+    support ROC plotting, the function exits gracefully after printing a
+    warning message.
 
     Parameters
     ----------
@@ -665,29 +748,38 @@ def roc_curve_plot_menu(zeus: ZeusEngine):
     Returns
     -------
     None
-        This function performs a plotting-and-display workflow and does not return
-        a value.
+        This function performs an interactive plotting-and-display workflow and
+        does not return a value.
+
+    Side Effects
+    ------------
+    - Prompts the user to choose a dataset split.
+    - Prompts for target-column selection when multi-output classification is
+      detected.
+    - Calls the current model's ROC plotting method through the engine.
+    - Prints the returned ROC summary in the terminal using ``pprint``.
 
     Notes
     -----
     This menu is intended for classifier models that expose
-    ``roc_curve_plot_engine``. Actual availability depends on the implementation of
-    the current model.
+    ``roc_curve_plot_engine``. Actual availability depends on the currently
+    active model implementation.
 
-    The ROC plotting workflow is dispatched with:
-
-    - ``dataset="test"``
-    - ``target_col=<selected column or None>``
-
-    For single-output classification, ``target_col`` remains ``None``.
-    For multi-output classification, ROC analysis is performed only for the chosen
-    binary target column.
+    ROC plotting is typically meaningful only for binary classification, so
+    model-layer validation may raise an exception if the selected workflow does
+    not satisfy binary ROC requirements.
     """
     logger.info("Entered menu: ROC Curve Plot")
 
     if zeus.current_model is None:
         logger.warning("ROC Curve Plot failed: no current model")
         print("⚠️ No current model available ‼️")
+        return
+
+    # ---------- Select dataset ----------
+    dataset = _select_plot_dataset()
+    if dataset is None:
+        logger.info("ROC Curve Plot cancelled at dataset selection")
         return
 
     # ---------- Multiple target columns confirmation ----------
@@ -699,14 +791,14 @@ def roc_curve_plot_menu(zeus: ZeusEngine):
         return
 
     logger.info(
-        "Running ROC curve plot on test dataset | target_col=%s",
+        "Running ROC curve plot | dataset=%s | target_col=%s",
+        dataset,
         target_col,
     )
 
-    # ---------- ROC result ----------
     result = zeus.run_current_model_method(
         "roc_curve_plot_engine",
-        dataset="test",
+        dataset=dataset,
         target_col=target_col,
     )
 
@@ -715,7 +807,11 @@ def roc_curve_plot_menu(zeus: ZeusEngine):
         print("⚠️ ROC curve plot is not available for the current model ‼️")
         return
 
-    logger.info("ROC curve plot completed | target_col=%s", target_col)
+    logger.info(
+        "ROC curve plot completed | dataset=%s | target_col=%s",
+        dataset,
+        target_col,
+    )
     print("---------- 🔥 ROC Curve Result 🔥 ----------")
     pprint(result)
 
@@ -726,21 +822,34 @@ def precision_recall_curve_plot_menu(zeus: ZeusEngine):
     """
     Plot the Precision-Recall curve for the current classifier model.
 
-    This menu function dispatches ``precision_recall_curve_plot_engine`` through
-    the active ``ZeusEngine`` model-method interface using the test dataset.
+    This menu function dispatches ``precision_recall_curve_plot_engine``
+    through the active ``ZeusEngine`` model-method interface using the dataset
+    split selected by the user.
 
-    For single-output classification, the workflow runs directly without requesting
-    a target column.
+    Workflow
+    --------
+    1. Confirm that a current model is available.
+    2. Prompt the user to choose the dataset split through
+       ``_select_plot_dataset()``.
+    3. If the active workflow is multi-output classification, prompt the user
+       to select a target column through
+       ``_select_multioutput_target_col(zeus)``.
+    4. Dispatch ``precision_recall_curve_plot_engine`` with:
 
-    For multi-output classification, the function first calls
-    ``_select_multioutput_target_col(zeus)`` to prompt the user to choose the
-    target column to analyze. The selected target is then passed to the underlying
-    Precision-Recall plotting method as ``target_col``.
+       - ``dataset=<selected split>``
+       - ``target_col=<selected column or None>``
 
-    If no current model is available, or if the active model does not support
-    Precision-Recall plotting, the function prints a warning message and exits
-    gracefully. When successful, the returned summary is displayed using
-    ``pprint``.
+    Single-output classification
+        The PR workflow runs directly with ``target_col=None``.
+
+    Multi-output classification
+        The user must choose one target column first. The PR curve is then
+        generated only for that selected target.
+
+    If no current model is available, if dataset selection is cancelled, if a
+    required target column is not selected, or if the active model does not
+    support Precision-Recall plotting, the function exits gracefully after
+    printing a warning message.
 
     Parameters
     ----------
@@ -751,29 +860,41 @@ def precision_recall_curve_plot_menu(zeus: ZeusEngine):
     Returns
     -------
     None
-        This function performs a plotting-and-display workflow and does not return
-        a value.
+        This function performs an interactive plotting-and-display workflow and
+        does not return a value.
+
+    Side Effects
+    ------------
+    - Prompts the user to choose a dataset split.
+    - Prompts for target-column selection when multi-output classification is
+      detected.
+    - Calls the current model's Precision-Recall plotting method through the
+      engine.
+    - Prints the returned Precision-Recall summary in the terminal using
+      ``pprint``.
 
     Notes
     -----
     This menu is intended for classifier models that expose
     ``precision_recall_curve_plot_engine``. Actual availability depends on the
-    implementation of the active current model.
+    currently active model implementation.
 
-    The Precision-Recall plotting workflow is dispatched with:
-
-    - ``dataset="test"``
-    - ``target_col=<selected column or None>``
-
-    For single-output classification, ``target_col`` remains ``None``.
-    For multi-output classification, Precision-Recall analysis is performed only
-    for the selected target column.
+    Precision-Recall plots are especially useful for imbalanced binary
+    classification because they focus directly on positive-class retrieval
+    quality. Model-layer validation may raise an exception if the selected
+    workflow does not satisfy binary PR-curve requirements.
     """
     logger.info("Entered menu: Precision-Recall Curve Plot")
 
     if zeus.current_model is None:
         logger.warning("Precision-Recall Curve Plot failed: no current model")
         print("⚠️ No current model available ‼️")
+        return
+
+    # ---------- Select dataset ----------
+    dataset = _select_plot_dataset()
+    if dataset is None:
+        logger.info("Precision-Recall Curve Plot cancelled at dataset selection")
         return
 
     # ---------- Multiple target columns confirmation ----------
@@ -785,28 +906,25 @@ def precision_recall_curve_plot_menu(zeus: ZeusEngine):
         return
 
     logger.info(
-        "Running Precision-Recall curve plot on test dataset | target_col=%s",
+        "Running Precision-Recall curve plot | dataset=%s | target_col=%s",
+        dataset,
         target_col,
     )
 
-    # ---------- Precision recall result ----------
     result = zeus.run_current_model_method(
         "precision_recall_curve_plot_engine",
-        dataset="test",
+        dataset=dataset,
         target_col=target_col,
     )
 
     if result is None:
-        logger.warning(
-            "Precision-Recall curve plot is not available for the current model"
-        )
-        print(
-            "⚠️ Precision-Recall curve plot is not available for the current model ‼️"
-        )
+        logger.warning("Precision-Recall curve plot is not available for the current model")
+        print("⚠️ Precision-Recall curve plot is not available for the current model ‼️")
         return
 
     logger.info(
-        "Precision-Recall curve plot completed | target_col=%s",
+        "Precision-Recall curve plot completed | dataset=%s | target_col=%s",
+        dataset,
         target_col,
     )
     print("---------- 🔥 Precision-Recall Curve Result 🔥 ----------")
@@ -1066,7 +1184,7 @@ def evaluation_menu(zeus: ZeusEngine):
         ),
         5: ("📋 SVC Confusion Matrix Plot", svc_confusion_matrix_plot_menu),
         6: ("🏹 ROC Curve Plot (Classification)", roc_curve_plot_menu),
-        7: ("🔬 SVC Precision-Recall Curve Plot", precision_recall_curve_plot_menu),
+        7: ("🔬 Precision-Recall Curve Plot (Classification)", precision_recall_curve_plot_menu),
         8: ("📈 SVR Regression Diagnostics", svr_regression_diagnostics_menu),
         9: (
             "🧮 SVC Decision Function Distribution Plot",

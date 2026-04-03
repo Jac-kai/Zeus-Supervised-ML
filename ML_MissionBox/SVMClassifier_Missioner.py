@@ -35,13 +35,14 @@ class SVMClassifier_Missioner(BaseModelConfig):
     """
     Mission-layer class for Support Vector Machine classification workflows.
 
-    This class extends :class:`BaseModelConfig` and provides shared classification
-    utilities for SVC-based model trainers. It serves as the mission layer between
-    the shared base configuration workflow and concrete SVC model classes.
+    This class extends :class:`BaseModelConfig` and provides shared
+    classification utilities for SVC-based model trainers. It serves as the
+    mission layer between the shared base-configuration workflow and concrete
+    SVC model classes.
 
     This class does not define the final estimator construction or CV scoring
-    dispatch itself. Concrete model-layer classes are responsible for building the
-    final estimator and parameter grid, while the base layer handles shared
+    dispatch itself. Concrete model-layer classes are responsible for building
+    the final estimator and parameter grid, while the base layer handles shared
     training workflow logic, including model-selection scoring dispatch.
 
     Main Responsibilities
@@ -49,16 +50,19 @@ class SVMClassifier_Missioner(BaseModelConfig):
     - Define the machine learning task type as classification.
     - Define the estimator step name used inside sklearn pipelines.
     - Evaluate trained SVC pipelines on train and test data.
-    - Generate diagnostic plots for classification performance.
+    - Generate classification diagnostic plots, including confusion matrix,
+      decision-function distribution, ROC curve, and Precision-Recall curve.
     - Inspect SVC-specific learned attributes such as support vectors,
-    coefficients, and decision scores.
+      coefficients, intercepts, and decision scores.
+    - Validate binary-classification plotting requirements for
+      decision-function-based diagnostic curves.
     - Save and load trained model artifacts with metadata.
 
     Supported Evaluation Modes
     --------------------------
     1. Single-output classification
     - Accuracy
-    - Weighted F1
+    - Weighted F1 score
     - Confusion matrix
     - Classification report
     - Prediction preview
@@ -66,40 +70,51 @@ class SVMClassifier_Missioner(BaseModelConfig):
 
     2. Multi-output classification
     - Per-target accuracy
-    - Per-target weighted F1
+    - Per-target weighted F1 score
     - Per-target confusion matrix
     - Per-target classification report
-    - Macro averages across targets
+    - Macro-average metrics across targets
     - Prediction preview
     - Optional probability preview per target when supported
 
-    Plotting Utilities
-    ------------------
+    Diagnostic Plot Utilities
+    -------------------------
     - Confusion matrix plot
-    - Decision function distribution plot
+    - Decision-function distribution plot
     - ROC curve plot
     - Precision-Recall curve plot
 
+    Model Inspection Utilities
+    --------------------------
+    - SVC model insight summary
+    - Support-vector metadata preview
+    - Decision-function preview
+    - Coefficient and intercept inspection when available
+
     Notes
     -----
-    - Model-selection scoring for both single-output and multi-output workflows is
-    handled by the base layer.
-    - SVC does not provide ``feature_importances_``, so no native feature
-    importance method is implemented here.
-    - Some plots and insights require:
-        * single-output classification
-        * binary classification
-        * availability of ``decision_function``
-    - Probability previews are only returned when the underlying pipeline or
-    estimator exposes ``predict_proba()``. For standard SVC, this usually
-    requires ``probability=True`` during model creation.
-    - This mission layer focuses on reusable evaluation, plotting, inspection,
-    and persistence logic shared across SVC-based classification workflows.
+    - Model-selection scoring for both single-output and multi-output
+      workflows is handled by the base layer.
+    - SVC does not provide ``feature_importances_``, so no native
+      feature-importance utility is implemented here.
+    - Decision-function-based diagnostic plots in this class are intended for
+      binary classification only.
+    - In multi-output classification, binary plots and SVC insight utilities
+      require one selected ``target_col``.
+    - When the outer pipeline includes preprocessing before the classifier,
+      the mission layer can transform the selected dataset before calling the
+      fitted target estimator in multi-output workflows.
+    - Probability previews are returned only when the underlying pipeline or
+      estimator exposes ``predict_proba()``. For standard SVC, this usually
+      requires ``probability=True`` during model creation.
+    - This mission layer focuses on reusable evaluation, plotting,
+      model-inspection, validation, and persistence logic shared across
+      SVC-based classification workflows.
 
     Attributes Inherited from BaseModelConfig
     -----------------------------------------
     model_pipeline : sklearn Pipeline or compatible estimator, optional
-        Trained model pipeline.
+        Trained classification pipeline.
 
     X_train, X_test : pd.DataFrame or np.ndarray
         Training and testing feature sets.
@@ -114,13 +129,13 @@ class SVMClassifier_Missioner(BaseModelConfig):
         Feature names recorded after preprocessing.
 
     input_model_type : str, optional
-        Model label used for filenames and reporting.
+        Model label used for filenames, reporting, and output records.
 
     y_train_pred, y_test_pred : optional
-        Cached prediction outputs created during evaluation.
+        Cached train/test predictions produced during evaluation.
 
     prediction_preview : optional
-        Cached preview of predictions for reporting or debugging.
+        Cached prediction preview for reporting or debugging.
     """
 
     # -------------------- Classification task --------------------

@@ -10,18 +10,23 @@ import pandas as pd
 from joblib import dump, load
 from sklearn.metrics import (
     accuracy_score,
+    auc,
     classification_report,
     confusion_matrix,
     f1_score,
+    precision_recall_curve,
+    roc_curve,
 )
 
 from Zeus.ML_BaseConfigBox.BaseModelConfig import BaseModelConfig
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PLOT_DIR = os.path.join(BASE_DIR, "ML_Report/KNNCla_Plot")
+ROC_DIR = os.path.join(BASE_DIR, "ML_Report/ROC_Plot")
 MODEL_DIR = os.path.join(BASE_DIR, "ML_Report/KNNCla_Trained_Model")
 
 os.makedirs(PLOT_DIR, exist_ok=True)
+os.makedirs(ROC_DIR, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 
@@ -30,14 +35,14 @@ class KNNClassifier_Missioner(BaseModelConfig):
     """
     Mission-layer class for K-Nearest Neighbors classification workflows.
 
-    This class extends :class:`BaseModelConfig` and provides shared classification
-    utilities for KNN-based model trainers. It serves as the mission layer between
-    the shared base configuration workflow and concrete KNN classifier model
-    classes.
+    This class extends :class:`BaseModelConfig` and provides shared
+    classification utilities for KNN-based model trainers. It serves as the
+    mission layer between the shared base-configuration workflow and concrete
+    KNN classifier model classes.
 
     This class does not define the final estimator construction or CV scoring
-    dispatch itself. Concrete model-layer classes are responsible for building the
-    final estimator and parameter grid, while the base layer handles shared
+    dispatch itself. Concrete model-layer classes are responsible for building
+    the final estimator and parameter grid, while the base layer handles shared
     training workflow logic, including model-selection scoring dispatch.
 
     Main Responsibilities
@@ -45,7 +50,10 @@ class KNNClassifier_Missioner(BaseModelConfig):
     - Define the machine learning task type as classification.
     - Define the estimator step name used inside sklearn pipelines.
     - Evaluate trained KNN classification pipelines on train and test splits.
-    - Generate confusion matrix plots for classification diagnostics.
+    - Generate classification diagnostic plots, including confusion matrix,
+      ROC curve, and Precision-Recall curve.
+    - Validate binary-classification plotting requirements for probability-based
+      curves.
     - Save and load trained model artifacts together with basic metadata.
 
     Supported Evaluation Modes
@@ -70,20 +78,25 @@ class KNNClassifier_Missioner(BaseModelConfig):
     Diagnostic Plot Utilities
     -------------------------
     - Confusion matrix plot
+    - ROC curve plot
+    - Precision-Recall curve plot
 
     Notes
     -----
-    - Model-selection scoring for both single-output and multi-output workflows is
-    handled by the base layer.
+    - Model-selection scoring for both single-output and multi-output
+      workflows is handled by the base layer.
     - KNN classifiers do not expose ``feature_importances_``, so no
-    feature-importance utility is implemented here.
-    - Plotting support in this class is intentionally focused on confusion
-    matrices. For multi-output classification, confusion matrices are expected
-    to be interpreted per target if needed.
-    - Probability previews depend on whether the trained pipeline exposes
-    ``predict_proba()``.
-    - This mission layer focuses on reusable evaluation, plotting, and persistence
-    logic shared across KNN-based classification workflows.
+      feature-importance utility is implemented here.
+    - Probability-based plots in this class rely on ``predict_proba()``.
+    - ROC and Precision-Recall plotting utilities are intended for binary
+      classification only.
+    - In multi-output classification, ROC and Precision-Recall plots require
+      the user to specify one binary ``target_col``.
+    - If the outer pipeline includes preprocessing before the final classifier,
+      the mission layer can transform the selected dataset before calling the
+      fitted target estimator in multi-output workflows.
+    - This mission layer focuses on reusable evaluation, plotting, validation,
+      and persistence logic shared across KNN-based classification workflows.
 
     Attributes Inherited from BaseModelConfig
     -----------------------------------------
@@ -522,6 +535,423 @@ class KNNClassifier_Missioner(BaseModelConfig):
         plt.close()
 
         return out
+    
+    # -------------------- Get binary KNN plot inputs --------------------
+    def _get_binary_knn_plot_inputs(
+        self,
+        dataset: str = "test",
+        preview_rows: int = 10,
+        target_col: Optional[str] = None,
+    ):
+        """
+        Validate and prepare binary-classification inputs for KNN probability-based plots.
+
+        This helper prepares the selected dataset split, validates binary-target
+        requirements, and returns the feature matrix, selected target values,
+        preview subset, positive-class score array, and metadata needed by KNN
+        ROC and Precision-Recall plotting methods.
+
+        Supported Workflows
+        -------------------
+        1. Single-output binary classification
+        The helper uses the selected train/test split directly and obtains class
+        probabilities from ``self.model_pipeline.predict_proba(...)``.
+
+        2. Multi-output classification with a selected binary target
+        The helper requires ``target_col``. It selects the corresponding target
+        column, validates that it is binary, and then extracts probabilities from
+        the fitted estimator associated with that target.
+
+        Dataset Selection
+        -----------------
+        - ``dataset="train"`` -> uses ``self.X_train`` and ``self.Y_train``
+        - ``dataset="test"``  -> uses ``self.X_test`` and ``self.Y_test``
+
+        Probability Source
+        ------------------
+        - Single-output:
+        probabilities are produced directly by the fitted outer pipeline.
+        - Multi-output:
+        probabilities are produced by the selected fitted target estimator.
+
+        If the outer pipeline contains preprocessing steps before the final
+        classifier, the helper first applies:
+
+        ``self.model_pipeline[:-1].transform(X_used)``
+
+        and then calls ``predict_proba()`` on the selected target estimator.
+
+        Parameters
+        ----------
+        dataset : str, default="test"
+            Dataset split to use.
+
+            Accepted values:
+            - ``"train"``
+            - ``"test"``
+
+        preview_rows : int, default=10
+            Number of rows included in the preview feature subset returned as
+            ``X_preview``.
+
+        target_col : str or None, default=None
+            Target column name used only for multi-output classification.
+
+            - Ignored for single-output classification
+            - Required for multi-output ROC / PR workflows
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+
+            - ``X_used`` : pd.DataFrame or np.ndarray
+                Full selected feature matrix.
+            - ``y_used`` : pd.Series, np.ndarray, or pd.DataFrame column
+                Selected target values for the plotting workflow.
+            - ``X_preview`` : pd.DataFrame or np.ndarray
+                Preview subset of the selected feature matrix.
+            - ``y_score`` : np.ndarray
+                Positive-class probability scores used for ROC / PR plotting.
+            - ``classes`` : np.ndarray
+                Sorted unique class labels of the selected target.
+            - ``dataset`` : str
+                Echoed dataset split value.
+            - ``target_col`` : str or None
+                Echoed target-column value.
+
+        Raises
+        ------
+        ValueError
+            If:
+
+            - ``self.model_pipeline`` is not trained,
+            - ``dataset`` is not ``"train"`` or ``"test"``,
+            - the requested dataset split is unavailable,
+            - the pipeline or selected target estimator does not expose
+            ``predict_proba()``,
+            - the selected target is not binary,
+            - multi-output classification is detected but ``target_col`` is missing,
+            - or ``target_col`` does not exist in the current target data.
+
+        Notes
+        -----
+        - This helper is intended for KNN probability-based binary plotting
+        utilities such as ROC curves and Precision-Recall curves.
+        - The returned positive-class score is taken from ``proba[:, 1]`` after
+        confirming that the selected target is binary.
+        - In multi-output classification, only the selected binary target is used.
+        - ``classes[1]`` is expected to represent the positive class in downstream
+        plotting methods.
+        """
+        if self.model_pipeline is None:
+            raise ValueError("⚠️ Model pipeline not trained yet ‼️")
+
+        if dataset not in {"train", "test"}:
+            raise ValueError("⚠️ dataset must be 'train' or 'test' ‼️")
+
+        if dataset == "train":
+            X_used = self.X_train
+            y_used = self.Y_train
+        else:
+            X_used = self.X_test
+            y_used = self.Y_test
+
+        if X_used is None or y_used is None:
+            raise ValueError("⚠️ Requested dataset split is not available ‼️")
+
+        X_preview = X_used[:preview_rows]
+
+        if not hasattr(self.model_pipeline, "predict_proba"):
+            raise ValueError("⚠️ Current KNN pipeline has no predict_proba() ‼️")
+
+        # ---------- Single-output ----------
+        if not self._is_multi_output(y_used):
+            classes = np.unique(y_used)
+            if len(classes) != 2:
+                raise ValueError("⚠️ Precision-Recall plot requires binary classification ‼️")
+
+            proba = self.model_pipeline.predict_proba(X_used)
+            y_score = proba[:, 1]
+
+            return X_used, y_used, X_preview, y_score, classes, dataset, target_col
+
+        # ---------- Multi-output ----------
+        if target_col is None:
+            raise ValueError("⚠️ target_col is required for multi-output classification ‼️")
+
+        if not isinstance(y_used, pd.DataFrame):
+            y_used_df = pd.DataFrame(y_used)
+        else:
+            y_used_df = y_used.copy()
+
+        if target_col not in y_used_df.columns:
+            raise ValueError(f"⚠️ target_col '{target_col}' not found in Y data ‼️")
+
+        target_idx = list(y_used_df.columns).index(target_col)
+        y_target = y_used_df[target_col]
+
+        classes = np.unique(y_target)
+        if len(classes) != 2:
+            raise ValueError(f"⚠️ target_col '{target_col}' is not binary classification ‼️")
+
+        clf = self.model_pipeline.named_steps.get(self.step_name, self.model_pipeline)
+
+        if not hasattr(clf, "estimators_"):
+            raise ValueError("⚠️ Multi-output classifier has no fitted estimators_ ‼️")
+
+        base_est = clf.estimators_[target_idx]
+        if not hasattr(base_est, "predict_proba"):
+            raise ValueError("⚠️ Target estimator has no predict_proba() ‼️")
+
+        if hasattr(self.model_pipeline, "steps") and len(self.model_pipeline.steps) > 1:
+            X_trans = self.model_pipeline[:-1].transform(X_used)
+            proba = base_est.predict_proba(X_trans)
+        else:
+            proba = base_est.predict_proba(X_used)
+
+        y_score = proba[:, 1]
+
+        return X_used, y_target, X_preview, y_score, classes, dataset, target_col
+
+    # -------------------- ROC curve plot --------------------
+    def roc_curve_plot_engine(
+        self,
+        dataset: str = "test",
+        filename: Optional[str] = None,
+        target_col: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Plot and save the ROC curve for binary KNN classification.
+
+        This method computes and plots the Receiver Operating Characteristic (ROC)
+        curve using positive-class probabilities returned by ``predict_proba()``.
+        It supports:
+
+        - single-output binary classification, or
+        - multi-output classification when a binary ``target_col`` is specified
+
+        Parameters
+        ----------
+        dataset : str, default="test"
+            Dataset split to use.
+
+            Accepted values:
+            - ``"train"``
+            - ``"test"``
+
+        filename : str or None, default=None
+            Output filename for the saved image.
+
+            - If provided, that name is used directly.
+            - If ``None``, an automatic filename is generated based on model type,
+            dataset split, and optional target column.
+
+        target_col : str or None, default=None
+            Target column name used only for multi-output classification.
+
+            - Ignored for single-output classification
+            - Required when plotting a ROC curve for a binary target from a
+            multi-output classifier
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing:
+
+            - ``"saved_path"`` : str
+                Full saved file path.
+            - ``"roc_auc"`` : float
+                Area under the ROC curve.
+
+        Raises
+        ------
+        ValueError
+            Propagated from ``_get_binary_knn_plot_inputs()`` when the task or
+            selected target does not satisfy binary ROC plotting requirements.
+
+        Side Effects
+        ------------
+        - Saves the figure into ``ROC_DIR``.
+        - Displays the figure using matplotlib.
+        - Prints the saved file path.
+
+        Notes
+        -----
+        - The positive class is chosen as ``classes[1]`` after sorting the unique
+        labels of the selected target.
+        - The diagonal reference line represents random-guessing performance.
+        - A higher ROC AUC indicates better ranking and binary class-separation
+        ability.
+        - In multi-output classification, the ROC curve is generated only for the
+        selected binary target.
+        """
+        _, y_used, _, y_score, classes, dataset, target_col = (
+            self._get_binary_knn_plot_inputs(
+                dataset=dataset,
+                preview_rows=10,
+                target_col=target_col,
+            )
+        )
+
+        y_true_arr = np.asarray(y_used)
+        pos_label = classes[1]
+
+        fpr, tpr, _ = roc_curve(
+            y_true_arr,
+            y_score,
+            pos_label=pos_label,
+        )
+        roc_auc = auc(fpr, tpr)
+
+        plt.figure(figsize=(6, 5))
+        plt.plot(fpr, tpr, label=f"AUC = {roc_auc:.4f}")
+        plt.plot([0, 1], [0, 1], linestyle="--")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+
+        title_suffix = f" | target={target_col}" if target_col is not None else ""
+        plt.title(f"KNN | {dataset} | ROC Curve{title_suffix}")
+        plt.legend(loc="lower right")
+        plt.tight_layout()
+
+        if filename is None:
+            if target_col is None:
+                filename = f"{self.input_model_type}_{dataset}_roc_curve.png"
+            else:
+                filename = f"{self.input_model_type}_{dataset}_{target_col}_roc_curve.png"
+
+        out = os.path.join(ROC_DIR, filename)
+        plt.savefig(out, dpi=200, bbox_inches="tight")
+        print(f"💾 ROC curve saved path: {out}")
+
+        plt.show()
+        plt.close()
+
+        return {
+            "saved_path": out,
+            "roc_auc": float(roc_auc),
+        }
+
+    # -------------------- Precision recall curve plot --------------------
+    def precision_recall_curve_plot_engine(
+        self,
+        dataset: str = "test",
+        filename: Optional[str] = None,
+        target_col: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Plot and save the Precision-Recall curve for binary KNN classification.
+
+        This method computes and plots the Precision-Recall (PR) curve using
+        positive-class probabilities returned by ``predict_proba()``. It supports:
+
+        - single-output binary classification, or
+        - multi-output classification when a binary ``target_col`` is specified
+
+        The PR curve is especially informative for imbalanced binary classification
+        problems because it focuses directly on positive-class retrieval quality.
+
+        Parameters
+        ----------
+        dataset : str, default="test"
+            Dataset split to use.
+
+            Accepted values:
+            - ``"train"``
+            - ``"test"``
+
+        filename : str or None, default=None
+            Output filename for the saved image.
+
+            - If provided, that name is used directly.
+            - If ``None``, an automatic filename is generated based on model type,
+            dataset split, and optional target column.
+
+        target_col : str or None, default=None
+            Target column name used only for multi-output classification.
+
+            - Ignored for single-output classification
+            - Required when plotting a PR curve for a binary target from a
+            multi-output classifier
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing:
+
+            - ``"saved_path"`` : str
+                Full saved file path.
+            - ``"pr_auc"`` : float
+                Area under the Precision-Recall curve.
+
+        Raises
+        ------
+        ValueError
+            Propagated from ``_get_binary_knn_plot_inputs()`` when the task or
+            selected target does not satisfy binary Precision-Recall plotting
+            requirements.
+
+        Side Effects
+        ------------
+        - Saves the figure into ``PLOT_DIR``.
+        - Displays the figure using matplotlib.
+        - Prints the saved file path.
+
+        Notes
+        -----
+        - The positive class is chosen as ``classes[1]`` after sorting the unique
+        labels of the selected target.
+        - PR curves are often more sensitive than ROC curves under heavy class
+        imbalance because they emphasize positive-class retrieval behavior.
+        - The returned AUC is computed over the recall-precision curve.
+        - In multi-output classification, the PR curve is generated only for the
+        selected binary target.
+        """
+        _, y_used, _, y_score, classes, dataset, target_col = (
+            self._get_binary_knn_plot_inputs(
+                dataset=dataset,
+                preview_rows=10,
+                target_col=target_col,
+            )
+        )
+
+        y_true_arr = np.asarray(y_used)
+        pos_label = classes[1]
+
+        precision, recall, _ = precision_recall_curve(
+            y_true_arr,
+            y_score,
+            pos_label=pos_label,
+        )
+        pr_auc = auc(recall, precision)
+
+        plt.figure(figsize=(6, 5))
+        plt.plot(recall, precision, label=f"AUC = {pr_auc:.4f}")
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        title_suffix = f" | target={target_col}" if target_col is not None else ""
+        plt.title(f"KNN | {dataset} | Precision-Recall Curve{title_suffix}")
+        plt.legend(loc="lower left")
+        plt.tight_layout()
+
+        if filename is None:
+            if target_col is None:
+                filename = f"{self.input_model_type}_{dataset}_pr_curve.png"
+            else:
+                filename = f"{self.input_model_type}_{dataset}_{target_col}_pr_curve.png"
+
+        out = os.path.join(PLOT_DIR, filename)
+        plt.savefig(out, dpi=200, bbox_inches="tight")
+        print(f"💾 PR curve saved path: {out}")
+
+        plt.show()
+        plt.close()
+
+        return {
+            "saved_path": out,
+            "pr_auc": float(pr_auc),
+        }
 
     # -------------------- Save trained model --------------------
     def save_model_joblib(self, filename: str = "knn_model.joblib") -> str:
