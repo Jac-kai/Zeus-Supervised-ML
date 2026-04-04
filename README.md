@@ -38,6 +38,9 @@ It includes:
 - Support train/test selection for ROC and Precision-Recall plots
 - Save and reload trained models
 - Logging support for workflow tracking and debugging
+- Optional cross-validation training with GridSearchCV
+- Store compact CV search summaries and raw CV search results
+- Export top-ranked CV search results as CSV reports
 
 ---
 
@@ -224,8 +227,8 @@ It reflects my effort to transition into AI and data-related roles by combining 
 Possible future extensions include:
 
 - adding more supervised learning models
-- supporting hyperparameter tuning workflows
-- exporting evaluation reports automatically
+- expanding hyperparameter tuning workflows across more models
+- exporting richer evaluation and CV reports automatically
 - adding more visualization options
 - improving saved model reload workflows
 - including example datasets and screenshots
