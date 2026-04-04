@@ -123,12 +123,27 @@ class BaseModelConfig(ABC):
         Side Effects
         ------------
         Initializes internal state fields used by the workflow:
-        - Train/test split buffers: X_train, X_test, Y_train, Y_test
-        - Prediction buffers: y_train_pred, y_test_pred
-        - Trained pipeline: model_pipeline
-        - Feature name cache: feature_names
-        - Column caches for fallback naming: _numeric_cols, _categorical_cols
-        - Run metadata: input_model_type, input_use_cv, input_cv_folds
+
+        - Train/test split buffers:
+        ``X_train``, ``X_test``, ``Y_train``, ``Y_test``
+
+        - Prediction buffers:
+        ``y_train_pred``, ``y_test_pred``, ``prediction_preview``
+
+        - Trained pipeline:
+        ``model_pipeline``
+
+        - Feature-name cache:
+        ``feature_names``
+
+        - Column caches for fallback naming:
+        ``_numeric_cols``, ``_categorical_cols``
+
+        - CV result buffers:
+        ``cv_search_report``, ``cv_results_raw``
+
+        - Run metadata:
+        ``input_model_type``, ``input_use_cv``, ``input_cv_folds``
         """
         self.cleaned_X_data = cleaned_X_data
 
@@ -162,6 +177,7 @@ class BaseModelConfig(ABC):
 
         # ---------- Record CV report ----------
         self.cv_search_report = None
+        self.cv_results_raw = None
 
         # ---------- Record internal metadata ----------
         self.input_model_type = None
@@ -645,8 +661,15 @@ class BaseModelConfig(ABC):
         3. the final estimator step provided by the subclass
 
         If cross-validation is enabled, the method runs ``GridSearchCV`` and stores
-        the best fitted pipeline. Otherwise, it fits the pipeline directly on the
-        training split.
+        the best fitted pipeline. It also records both:
+
+        - a compact CV summary report in ``self.cv_search_report``
+        - the full raw ``GridSearchCV.cv_results_`` dictionary in
+        ``self.cv_results_raw``
+
+        If cross-validation is disabled, the method fits the pipeline directly on the
+        training split and clears previously stored CV result buffers so the current
+        object state remains consistent with the latest training run.
 
         Parameters
         ----------
@@ -661,8 +684,9 @@ class BaseModelConfig(ABC):
             - ``{"classifier__max_depth": [3, 5, None]}``
             - ``{"regressor__n_estimators": [100, 300]}``
 
-            If ``None`` or empty, cross-validation can still run, but no hyperparameter
-            combinations will be searched beyond the default estimator configuration.
+            If ``None`` or empty, cross-validation can still run, but no explicit
+            hyperparameter combinations are searched beyond the estimator's current
+            configuration.
 
         use_cv : bool
             Whether to apply ``GridSearchCV``. If ``False``, the pipeline is fitted
@@ -739,8 +763,21 @@ class BaseModelConfig(ABC):
         Extracted transformed feature names after fitting.
 
         - ``self.cv_search_report`` :
-        A summary dictionary containing CV settings, best parameters, best CV score,
-        and the top-ranked CV results when ``use_cv=True``.
+        A compact summary dictionary containing:
+
+        - ``use_cv``
+        - ``cv_folds``
+        - ``scoring``
+        - ``best_params``
+        - ``best_cv_score``
+        - ``top_cv_results``
+
+        This attribute is populated when ``use_cv=True`` and reset to ``None`` when
+        ``use_cv=False``.
+
+        - ``self.cv_results_raw`` :
+        Full raw ``GridSearchCV.cv_results_`` dictionary when ``use_cv=True``.
+        This attribute is reset to ``None`` when ``use_cv=False``.
 
         Also calls ``save_cv_search_report()`` automatically when cross-validation
         results are available.
@@ -759,6 +796,15 @@ class BaseModelConfig(ABC):
         selected classification scoring name
         - multi-output regression -> use a base-layer scorer built from the
         selected regression scoring name
+
+        This method keeps two levels of CV result tracking:
+
+        1. ``self.cv_search_report``
+        Human-readable compact summary intended for quick inspection and CSV export.
+
+        2. ``self.cv_results_raw``
+        Full raw CV search results intended for later analysis, debugging, or
+        future report expansion.
         """
         if self.X_train is None or self.Y_train is None:
             raise ValueError("⚠️ Run train_test_split_engine() before training ‼️")
@@ -824,6 +870,7 @@ class BaseModelConfig(ABC):
             self.model_pipeline = gs.best_estimator_
             best_params = gs.best_params_
             best_score = gs.best_score_
+            self.cv_results_raw = gs.cv_results_
 
             # ---------- CV report saved as CSV file ----------
             cv_results_df = pd.DataFrame(gs.cv_results_)
@@ -851,6 +898,9 @@ class BaseModelConfig(ABC):
         else:
             pipe.fit(self.X_train, self.Y_train)
             self.model_pipeline = pipe
+
+            self.cv_search_report = None
+            self.cv_results_raw = None
 
         self._extract_feature_names()  # Get feature name
 
@@ -880,7 +930,8 @@ class BaseModelConfig(ABC):
 
         Notes
         -----
-        The saved CSV currently contains the top CV result rows with these fields:
+        The saved CSV currently contains the top-ranked CV result rows with these
+        fields:
 
         - ``rank_test_score``
         - ``mean_test_score``
@@ -893,6 +944,10 @@ class BaseModelConfig(ABC):
 
         where ``model_name`` comes from ``self.input_model_type``. If that value is
         not available, ``"model"`` is used as the fallback name.
+
+        This method exports the compact summary report only. The full raw GridSearchCV
+        result dictionary remains available separately in ``self.cv_results_raw`` when
+        CV was used.
         """
         if not self.cv_search_report:
             print("⚠️ No CV search report available to save ‼️")
