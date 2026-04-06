@@ -20,16 +20,21 @@ logger = logging.getLogger("Zeus")
 # -------------------- Helper: Encoded columns type check --------------------
 def _has_categorical_features(data) -> bool:
     """
-    Check whether the given feature dataset contains categorical columns.
+    Check whether the given feature dataset contains categorical-like columns.
 
-    This helper inspects the provided feature table and determines whether it
-    contains at least one column with a categorical-like dtype. In this workflow,
-    categorical columns are defined as columns whose dtype is ``object``,
-    ``category``, or ``bool``.
+    This helper inspects the provided feature table and determines whether at
+    least one column should be treated as categorical in the Zeus menu workflow.
 
-    The function is mainly used by model-training menus to decide whether the user
-    should be prompted to choose a categorical encoding strategy before dispatching
-    training parameters to the Zeus engine.
+    In the current workflow, categorical-like columns are defined as columns
+    whose dtype is one of:
+
+    - ``object``
+    - ``category``
+    - ``bool``
+
+    The helper is mainly used by training menus to decide whether the user
+    should be prompted to choose a categorical feature encoder before model
+    training begins.
 
     Parameters
     ----------
@@ -39,13 +44,19 @@ def _has_categorical_features(data) -> bool:
     Returns
     -------
     bool
-        ``True`` if the dataset contains at least one categorical-like column;
-        otherwise ``False``.
+        ``True`` if at least one categorical-like column exists in the given
+        dataset.
+
+        ``False`` if:
+        - the dataset is ``None``, or
+        - no categorical-like columns are found.
 
     Notes
     -----
-    If ``data`` is ``None``, the function returns ``False`` without raising an
-    error.
+    - This helper only checks feature-column dtypes.
+    - It does not transform data and does not validate target columns.
+    - The categorical-encoder selection step in the training menu is triggered
+      only when this helper returns ``True``.
     """
     if data is None:
         return False
@@ -58,30 +69,130 @@ def _has_categorical_features(data) -> bool:
     return len(categorical_cols) > 0  # Return True/False
 
 
+# -------------------- Helper: block invalid sparse-scaler combination --------------------
+def _is_invalid_sparse_scaler_combo(
+    model_name: str,
+    cat_encoder: str | None,
+    train_kwargs: dict,
+) -> bool:
+    """
+    Check whether the selected model / categorical-encoder / scaler combination
+    should be blocked before training.
+
+    This helper is used by the Zeus training-menu workflow to prevent parameter
+    combinations that are known to fail during pipeline fitting.
+
+    In the current workflow, the combination is treated as invalid when all of
+    the following conditions are satisfied:
+
+    - the selected model belongs to the KNN or SVM family
+    - the selected categorical encoder is ``"ohe"``
+    - the selected scaler type is ``"standard"``
+
+    Why this validation exists
+    --------------------------
+    ``OneHotEncoder`` commonly produces sparse matrix output for categorical
+    features. In this project workflow, applying ``StandardScaler`` with its
+    default centering behavior to sparse output may raise a runtime error during
+    training because sparse matrices cannot be mean-centered in that form.
+
+    This helper allows the menu layer to detect the invalid combination early
+    and stop the workflow before the training engine is called.
+
+    Parameters
+    ----------
+    model_name : str
+        Registered model name selected by the user.
+
+        Typical supported values include:
+
+        - ``"KNNClassifier"``
+        - ``"KNNRegressor"``
+        - ``"SVMClassifier"``
+        - ``"SVMRegressor"``
+
+    cat_encoder : str or None
+        Selected categorical encoder type.
+
+        Common values in the current Zeus workflow include:
+
+        - ``"ohe"``
+        - ``"ordinal"``
+
+        ``None`` may also be passed defensively when no categorical encoder
+        selection is involved.
+
+    train_kwargs : dict
+        Dictionary of model-specific training keyword arguments collected from
+        the model-parameter menu.
+
+        This helper reads ``train_kwargs.get("scaler_type")`` to determine the
+        currently selected scaler behavior.
+
+    Returns
+    -------
+    bool
+        ``True`` if the selected parameter combination is invalid and should be
+        blocked before training.
+
+        ``False`` if the combination is allowed.
+
+    Notes
+    -----
+    - This helper performs menu-layer validation only.
+    - It does not modify user selections.
+    - The blocking rule is intentionally limited to KNN / SVM family models in
+      this workflow because those models expose scaler selection and are more
+      sensitive to sparse-output scaling combinations.
+    - Tree-based models are not included in this validation rule.
+    """
+    scaler_type = train_kwargs.get("scaler_type")
+
+    scaler_sensitive_models = {
+        "KNNClassifier",
+        "KNNRegressor",
+        "SVMClassifier",
+        "SVMRegressor",
+    }
+
+    return (
+        model_name in scaler_sensitive_models
+        and cat_encoder == "ohe"
+        and scaler_type == "standard"
+    )
+
+
 # -------------------- Train classifier menu --------------------
 @menu_wrapper("Train Classifier")
 def train_classifier_menu(zeus: ZeusEngine):
     """
     Train a classifier model through the Zeus menu workflow.
 
-    This menu function coordinates the full terminal-based workflow for training a
-    classification model. It first verifies that feature preparation has already
-    been completed in the active Zeus engine and confirms that both the feature
-    matrix and target data are available.
+    This menu function coordinates the full terminal-based workflow for training
+    a classification model. It verifies that feature preparation has already
+    been completed, collects shared and model-specific training parameters,
+    optionally collects a categorical-feature encoding strategy, validates
+    encoder / scaler compatibility, and finally dispatches the training request
+    to ``zeus.train_model()``.
 
-    If the prerequisites are satisfied, the function interactively guides the user
-    through the following steps:
-
-    1. select a classifier model,
-    2. choose common training parameters,
-    3. choose model-specific training parameters,
-    4. optionally choose a categorical encoding strategy when categorical feature
-    columns are present,
-    5. dispatch the collected settings to ``zeus.train_model()``.
-
-    If any prerequisite is missing, if the user cancels the workflow at any step,
-    or if the training process fails, the function prints an appropriate warning
-    message and exits without continuing.
+    Workflow
+    --------
+    1. Check that ``feature_core`` has been built.
+    2. Check that both ``X`` and ``y`` have been prepared.
+    3. Let the user select a classifier model.
+    4. Collect common training parameters such as:
+       - test size
+       - split random state
+       - CV usage
+       - CV folds
+       - scoring
+    5. Collect model-specific training keyword arguments.
+    6. If categorical feature columns are present, ask the user to choose a
+       categorical encoder.
+    7. Validate whether the selected model / encoder / scaler combination is
+       allowed in the current workflow.
+    8. If valid, dispatch training through ``zeus.train_model()``.
+    9. Display success or failure information.
 
     Parameters
     ----------
@@ -92,18 +203,32 @@ def train_classifier_menu(zeus: ZeusEngine):
     Returns
     -------
     None
-        This function performs an interactive menu workflow and does not return a
-        value.
+        This function performs an interactive menu workflow and does not return
+        a value.
+
+    Validation Behavior
+    -------------------
+    The function exits early without training if any of the following occurs:
+
+    - feature data or target data have not been prepared
+    - the user cancels model selection
+    - the user cancels common-parameter selection
+    - the user cancels model-specific parameter selection
+    - the user cancels categorical-encoder selection
+    - the selected encoder / scaler combination is invalid for the chosen model
+    - the underlying training call fails
 
     Notes
     -----
-    This function is intended for classification tasks only. Available model names,
-    default scoring behavior, and task-specific parameter handling are resolved
-    through the classifier workflow.
-
-    When available, the current feature count is passed to
-    ``collect_model_train_kwargs()`` so that PCA-related settings can be validated
-    or adjusted before training begins.
+    - This function is intended for classification workflows only.
+    - When available, the current feature count is passed to
+      ``collect_model_train_kwargs()`` so PCA-related options can be validated
+      before training.
+    - If categorical features are detected, the selected encoder is passed to
+      the training layer through the ``cat_encoder`` argument.
+    - The menu layer also blocks known-invalid preprocessing combinations such
+      as sparse OHE output used together with standard scaling for certain
+      model families.
     """
     logger.info("Entered menu: Train Classifier")
     if zeus.feature_core is None:  # Check data be loaded
@@ -170,6 +295,22 @@ def train_classifier_menu(zeus: ZeusEngine):
         cat_encoder = selected_encoder
         logger.info("Categorical encoder selected: %s", cat_encoder)
 
+    # ---------- Block invalid encoder-scaler combination ----------
+    if _is_invalid_sparse_scaler_combo(model_name, cat_encoder, train_kwargs):
+        logger.warning(
+            "Blocked invalid classifier combo | model=%s | cat_encoder=%s | scaler_type=%s",
+            model_name,
+            cat_encoder,
+            train_kwargs.get("scaler_type"),
+        )
+        print("⚠️ Invalid parameter combination ‼️")
+        print("🔔 OHE usually produces sparse output.")
+        print("🔔 StandardScaler cannot center sparse matrices in this workflow.")
+        print("🔔 Please change one of the following:")
+        print("   - use cat_encoder = ordinal")
+        print("   - use scaler_type = None")
+        return
+
     logger.info(
         "Start classifier training | model=%s | common_params=%s | train_kwargs=%s | cat_encoder=%s",
         model_name,
@@ -205,24 +346,31 @@ def train_regressor_menu(zeus: ZeusEngine):
     """
     Train a regressor model through the Zeus menu workflow.
 
-    This menu function coordinates the full terminal-based workflow for training a
-    regression model. It first verifies that feature preparation has already been
-    completed in the active Zeus engine and confirms that both the feature matrix
-    and target data are available.
+    This menu function coordinates the full terminal-based workflow for training
+    a regression model. It verifies that feature preparation has already been
+    completed, collects shared and model-specific training parameters,
+    optionally collects a categorical-feature encoding strategy, validates
+    encoder / scaler compatibility, and finally dispatches the training request
+    to ``zeus.train_model()``.
 
-    If the prerequisites are satisfied, the function interactively guides the user
-    through the following steps:
-
-    1. select a regressor model,
-    2. choose common training parameters,
-    3. choose model-specific training parameters,
-    4. optionally choose a categorical encoding strategy when categorical feature
-    columns are present,
-    5. dispatch the collected settings to ``zeus.train_model()``.
-
-    If any prerequisite is missing, if the user cancels the workflow at any step,
-    or if the training process fails, the function prints an appropriate warning
-    message and exits without continuing.
+    Workflow
+    --------
+    1. Check that ``feature_core`` has been built.
+    2. Check that both ``X`` and ``y`` have been prepared.
+    3. Let the user select a regressor model.
+    4. Collect common training parameters such as:
+       - test size
+       - split random state
+       - CV usage
+       - CV folds
+       - scoring
+    5. Collect model-specific training keyword arguments.
+    6. If categorical feature columns are present, ask the user to choose a
+       categorical encoder.
+    7. Validate whether the selected model / encoder / scaler combination is
+       allowed in the current workflow.
+    8. If valid, dispatch training through ``zeus.train_model()``.
+    9. Display success or failure information.
 
     Parameters
     ----------
@@ -233,18 +381,32 @@ def train_regressor_menu(zeus: ZeusEngine):
     Returns
     -------
     None
-        This function performs an interactive menu workflow and does not return a
-        value.
+        This function performs an interactive menu workflow and does not return
+        a value.
+
+    Validation Behavior
+    -------------------
+    The function exits early without training if any of the following occurs:
+
+    - feature data or target data have not been prepared
+    - the user cancels model selection
+    - the user cancels common-parameter selection
+    - the user cancels model-specific parameter selection
+    - the user cancels categorical-encoder selection
+    - the selected encoder / scaler combination is invalid for the chosen model
+    - the underlying training call fails
 
     Notes
     -----
-    This function is intended for regression tasks only. Available model names,
-    default scoring behavior, and task-specific parameter handling are resolved
-    through the regressor workflow.
-
-    When available, the current feature count is passed to
-    ``collect_model_train_kwargs()`` so that PCA-related settings can be validated
-    or adjusted before training begins.
+    - This function is intended for regression workflows only.
+    - When available, the current feature count is passed to
+      ``collect_model_train_kwargs()`` so PCA-related options can be validated
+      before training.
+    - If categorical features are detected, the selected encoder is passed to
+      the training layer through the ``cat_encoder`` argument.
+    - The menu layer also blocks known-invalid preprocessing combinations such
+      as sparse OHE output used together with standard scaling for certain
+      model families.
     """
     logger.info("Entered menu: Train Regressor")
     if zeus.feature_core is None:
@@ -308,6 +470,22 @@ def train_regressor_menu(zeus: ZeusEngine):
 
         cat_encoder = selected_encoder
         logger.info("Categorical encoder selected: %s", cat_encoder)
+
+    # ---------- Block invalid encoder-scaler combination ----------
+    if _is_invalid_sparse_scaler_combo(model_name, cat_encoder, train_kwargs):
+        logger.warning(
+            "Blocked invalid regressor combo | model=%s | cat_encoder=%s | scaler_type=%s",
+            model_name,
+            cat_encoder,
+            train_kwargs.get("scaler_type"),
+        )
+        print("⚠️ Invalid parameter combination ‼️")
+        print("🔔 OHE usually produces sparse output.")
+        print("🔔 StandardScaler cannot center sparse matrices in this workflow.")
+        print("🔔 Please change one of the following:")
+        print("   - use cat_encoder = ordinal")
+        print("   - use scaler_type = None")
+        return
 
     logger.info(
         "Start regressor training | model=%s | common_params=%s | train_kwargs=%s | cat_encoder=%s",

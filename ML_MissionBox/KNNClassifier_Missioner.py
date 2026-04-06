@@ -169,44 +169,49 @@ class KNNClassifier_Missioner(BaseModelConfig):
     # -------------------- Model evaluation --------------------
     def model_evaluation_engine(self) -> Dict[str, Any]:
         """
-        Evaluate a trained KNN classification pipeline on train and test datasets.
+        Evaluate the trained classification pipeline on both training and test sets.
 
-        This method generates predictions from the fitted classification pipeline
-        and computes performance metrics according to whether the task is
-        single-output or multi-output classification.
+        This method generates predictions from the fitted model pipeline and computes
+        evaluation metrics according to whether the current classification problem is
+        single-output or multi-output.
 
         Evaluation Behavior
         -------------------
         Single-output classification
             Computes:
-            - train accuracy
+            - training accuracy
             - test accuracy
-            - train weighted F1
-            - test weighted F1
+            - training weighted F1 score
+            - test weighted F1 score
             - test confusion matrix
             - test classification report
-            - first 10 predicted labels
-            - optional first 10 predicted probabilities when supported
+            - first 10 predicted labels, inverse transformed to original class names
+            when label encoders are available
+            - optional first 10 probability predictions when supported by the model
 
         Multi-output classification
             Computes:
-            - per-target train accuracy
+            - per-target training accuracy
             - per-target test accuracy
-            - per-target train weighted F1
-            - per-target test weighted F1
+            - per-target training weighted F1 score
+            - per-target test weighted F1 score
             - per-target confusion matrix
             - per-target classification report
-            - macro-average train/test accuracy across targets
-            - macro-average train/test weighted F1 across targets
-            - first 10 predicted rows
+            - macro-average training accuracy across targets
+            - macro-average test accuracy across targets
+            - macro-average training weighted F1 across targets
+            - macro-average test weighted F1 across targets
+            - first 10 predicted rows, inverse transformed to original class names
+            for encoded target columns when encoders are available
             - optional probability preview per target when supported
 
         Returns
         -------
         Dict[str, Any]
-            Evaluation summary dictionary.
+            Structured evaluation results.
 
-            For single-output classification, keys include:
+            Single-output keys
+            ------------------
             - ``"mode"``
             - ``"train_accuracy"``
             - ``"test_accuracy"``
@@ -217,7 +222,8 @@ class KNNClassifier_Missioner(BaseModelConfig):
             - ``"prediction_preview_first10"``
             - ``"probability_preview_first10"``
 
-            For multi-output classification, keys include:
+            Multi-output keys
+            -----------------
             - ``"mode"``
             - ``"targets"``
             - ``"macro_train_accuracy"``
@@ -231,7 +237,7 @@ class KNNClassifier_Missioner(BaseModelConfig):
         Raises
         ------
         ValueError
-            If `self.model_pipeline` is not trained or not available.
+            If ``self.model_pipeline`` has not been trained.
 
         Side Effects
         ------------
@@ -242,13 +248,15 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         Notes
         -----
-        - The method assumes train/test split data already exist in the object,
-        typically prepared by base-layer logic.
-        - For multi-output classification, predicted values are converted to
-        DataFrame form so target-column names and indices stay aligned.
-        - Macro metrics here are simple arithmetic means across targets.
-        - Probability previews are only returned if the pipeline exposes
-        `predict_proba()`.
+        - In single-output classification, original class names are used in
+        ``classification_report`` when available through stored label encoders.
+        - In multi-output classification, class names are resolved independently for
+        each target column.
+        - Metric computation is performed on encoded or native numeric targets as
+        stored internally; inverse transformation is used only for display-facing
+        prediction previews.
+        - Probability previews are returned only when the fitted pipeline exposes
+        ``predict_proba()``.
         """
         if self.model_pipeline is None:
             raise ValueError("⚠️ Model pipeline not trained yet ‼️")
@@ -273,10 +281,31 @@ class KNNClassifier_Missioner(BaseModelConfig):
             test_f1 = f1_score(y_true_test, y_pred_test, average="weighted")
 
             # ---------- Confusion matrix and classification report ----------
-            cm = confusion_matrix(y_true_test, y_pred_test)
-            report = classification_report(y_true_test, y_pred_test, digits=4)
+            class_names = self._get_target_class_names()
 
-            self.prediction_preview = np.array(y_pred_test[:10])  # Array
+            if class_names is not None:
+                label_ids = list(range(len(class_names)))
+                cm = confusion_matrix(y_true_test, y_pred_test, labels=label_ids)
+                report = classification_report(
+                    y_true_test,
+                    y_pred_test,
+                    labels=label_ids,
+                    target_names=[str(x) for x in class_names],
+                    digits=4,
+                    zero_division=0,
+                )
+            else:
+                cm = confusion_matrix(y_true_test, y_pred_test)
+                report = classification_report(
+                    y_true_test,
+                    y_pred_test,
+                    digits=4,
+                    zero_division=0,
+                )
+
+            self.prediction_preview = self._inverse_transform_target_labels(
+                pd.Series(y_pred_test[:10])
+            )
 
             # ---------- Probability preview ----------
             proba_preview = None
@@ -331,16 +360,39 @@ class KNNClassifier_Missioner(BaseModelConfig):
             f1_list_test.append(f1_te)
 
             # ---------- Record above results for each target ----------
+            class_names = self._get_target_class_names(col)
+
+            if class_names is not None:
+                label_ids = list(range(len(class_names)))
+                report = classification_report(
+                    yt_te,
+                    yp_te,
+                    labels=label_ids,
+                    target_names=[str(x) for x in class_names],
+                    digits=4,
+                    zero_division=0,
+                )
+                cm = confusion_matrix(yt_te, yp_te, labels=label_ids)
+            else:
+                report = classification_report(
+                    yt_te,
+                    yp_te,
+                    digits=4,
+                    zero_division=0,
+                )
+                cm = confusion_matrix(yt_te, yp_te)
+
             per_target[col] = {
                 "train_accuracy": acc_tr,
                 "test_accuracy": acc_te,
                 "train_f1_weighted": f1_tr,
                 "test_f1_weighted": f1_te,
-                "classification_report": classification_report(yt_te, yp_te, digits=4),
-                "confusion_matrix": confusion_matrix(yt_te, yp_te),
+                "classification_report": report,
+                "confusion_matrix": cm,
             }
-
-        self.prediction_preview = y_pred_test_df.head(10)  # DataFrame
+        self.prediction_preview = self._inverse_transform_target_labels(
+            y_pred_test_df.head(10)
+        )
 
         # ---------- Probability preview for each target ----------
         proba_preview_per_target = None
@@ -376,7 +428,7 @@ class KNNClassifier_Missioner(BaseModelConfig):
                 float(np.mean(f1_list_test)) if f1_list_test else None
             ),
             "per_target": per_target,
-            "prediction_preview_first10_rows": y_pred_test_df.head(10),
+            "prediction_preview_first10_rows": self.prediction_preview,
             "probability_preview_first10_per_target": proba_preview_per_target,
         }
 
@@ -535,7 +587,7 @@ class KNNClassifier_Missioner(BaseModelConfig):
         plt.close()
 
         return out
-    
+
     # -------------------- Get binary KNN plot inputs --------------------
     def _get_binary_knn_plot_inputs(
         self,
@@ -669,7 +721,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
         if not self._is_multi_output(y_used):
             classes = np.unique(y_used)
             if len(classes) != 2:
-                raise ValueError("⚠️ Precision-Recall plot requires binary classification ‼️")
+                raise ValueError(
+                    "⚠️ Precision-Recall plot requires binary classification ‼️"
+                )
 
             proba = self.model_pipeline.predict_proba(X_used)
             y_score = proba[:, 1]
@@ -678,7 +732,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         # ---------- Multi-output ----------
         if target_col is None:
-            raise ValueError("⚠️ target_col is required for multi-output classification ‼️")
+            raise ValueError(
+                "⚠️ target_col is required for multi-output classification ‼️"
+            )
 
         if not isinstance(y_used, pd.DataFrame):
             y_used_df = pd.DataFrame(y_used)
@@ -693,7 +749,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         classes = np.unique(y_target)
         if len(classes) != 2:
-            raise ValueError(f"⚠️ target_col '{target_col}' is not binary classification ‼️")
+            raise ValueError(
+                f"⚠️ target_col '{target_col}' is not binary classification ‼️"
+            )
 
         clf = self.model_pipeline.named_steps.get(self.step_name, self.model_pipeline)
 
@@ -819,7 +877,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
             if target_col is None:
                 filename = f"{self.input_model_type}_{dataset}_roc_curve.png"
             else:
-                filename = f"{self.input_model_type}_{dataset}_{target_col}_roc_curve.png"
+                filename = (
+                    f"{self.input_model_type}_{dataset}_{target_col}_roc_curve.png"
+                )
 
         out = os.path.join(ROC_DIR, filename)
         plt.savefig(out, dpi=200, bbox_inches="tight")
@@ -939,7 +999,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
             if target_col is None:
                 filename = f"{self.input_model_type}_{dataset}_pr_curve.png"
             else:
-                filename = f"{self.input_model_type}_{dataset}_{target_col}_pr_curve.png"
+                filename = (
+                    f"{self.input_model_type}_{dataset}_{target_col}_pr_curve.png"
+                )
 
         out = os.path.join(PLOT_DIR, filename)
         plt.savefig(out, dpi=200, bbox_inches="tight")

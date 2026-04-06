@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
@@ -29,6 +30,7 @@ from sklearn.model_selection import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
+    LabelEncoder,
     MinMaxScaler,
     OneHotEncoder,
     OrdinalEncoder,
@@ -167,6 +169,14 @@ class BaseModelConfig(ABC):
         self.y_test_pred = None
         self.prediction_preview = None
 
+        # ---------- Record target variable Y encoder ----------
+        self.target_label_encoder = None  # single-output
+        self.target_label_encoders = {}  # multi-output
+        self.target_class_names = None  # single-output
+        self.target_class_name_map = {}  # multi-output
+        self.target_encoding_map = None  # single-output
+        self.target_encoding_maps = {}  # multi-output
+
         # ---------- Pipeline / feature names ----------
         self.model_pipeline = None
         self.feature_names = None
@@ -242,6 +252,234 @@ class BaseModelConfig(ABC):
             True if y is a DataFrame with >= 2 columns, otherwise False.
         """
         return isinstance(y, pd.DataFrame) and y.shape[1] > 1
+
+    # -------------------- Helper: Prepare classification target encoding --------------------
+    def _prepare_classification_target_encoding(self):
+        """
+        Encode classification target labels when needed before train/test split.
+
+        This helper standardizes classification targets into numeric label form so
+        downstream sklearn estimators, scoring functions, and evaluation utilities
+        can operate on a consistent target representation.
+
+        Behavior
+        --------
+        1. Regression task
+        - No encoding is applied.
+        - The method returns immediately.
+
+        2. Single-output classification
+        - If the target is numeric or boolean, no encoding is applied.
+        - If the target contains non-numeric labels, a single
+            ``LabelEncoder`` is fitted and stored in
+            ``self.target_label_encoder``.
+        - Encoded values replace ``self.cleaned_Y_data`` as a pandas Series.
+        - Original class names and class-to-index mapping are recorded in:
+            - ``self.target_class_names``
+            - ``self.target_encoding_map``
+
+        3. Multi-output classification
+        - Each target column is processed independently.
+        - Numeric or boolean target columns are kept unchanged.
+        - Non-numeric target columns are encoded with one dedicated
+            ``LabelEncoder`` per column.
+        - Encoded values replace the corresponding columns in
+            ``self.cleaned_Y_data``.
+        - Per-column encoders and mappings are recorded in:
+            - ``self.target_label_encoders``
+            - ``self.target_class_name_map``
+            - ``self.target_encoding_maps``
+
+        Side Effects
+        ------------
+        - Resets all previously stored target-encoding state before processing.
+        - May overwrite ``self.cleaned_Y_data`` with encoded target values.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - This method only runs when ``self.task == "classification"``.
+        - It is intended to be called before ``train_test_split`` so that both
+        training and test targets follow the same label mapping.
+        - Numeric and boolean targets are intentionally left unchanged to preserve
+        existing workflows that already use numeric class labels.
+        """
+        if self.task != "classification":
+            return
+
+        # ---------- Reset old states ----------
+        self.target_label_encoder = None
+        self.target_label_encoders = {}
+        self.target_class_names = None
+        self.target_class_name_map = {}
+        self.target_encoding_map = None
+        self.target_encoding_maps = {}
+
+        y = self.cleaned_Y_data
+
+        # ---------- Single-output ----------
+        if not self._is_multi_output(y):
+            if is_numeric_dtype(y) or is_bool_dtype(
+                y
+            ):  # Check Y is numeric-type or boolean-type
+                return
+
+            # ---------- LabelEncoder (single-output) ----------
+            le = LabelEncoder()
+            encoded = le.fit_transform(y)
+
+            self.cleaned_Y_data = pd.Series(
+                encoded,
+                index=y.index,
+                name=y.name,
+            )
+
+            # ---------- Record label after encoding ----------
+            self.target_label_encoder = le
+            self.target_class_names = list(le.classes_)
+            self.target_encoding_map = {
+                cls: int(le.transform([cls])[0]) for cls in le.classes_
+            }
+            return
+
+        # ---------- Multi-output ----------
+        y_df = y.copy()
+        for col in y_df.columns:
+            col_data = y_df[col]
+
+            if is_numeric_dtype(col_data) or is_bool_dtype(col_data):
+                continue
+
+            # ---------- LabelEncoder (single-output) ----------
+            le = LabelEncoder()
+            encoded = le.fit_transform(col_data)
+
+            # ---------- Record label after encoding ----------
+            y_df[col] = encoded
+            self.target_label_encoders[col] = le
+            self.target_class_name_map[col] = list(le.classes_)
+            self.target_encoding_maps[col] = {
+                cls: int(le.transform([cls])[0]) for cls in le.classes_
+            }
+
+        self.cleaned_Y_data = y_df
+
+    # -------------------- Helper: Inverse transform classification target labels --------------------
+    def _inverse_transform_target_labels(self, y_data):
+        """
+        Convert encoded classification targets or predictions back to original labels.
+
+        This helper reverses label encoding for classification outputs when fitted
+        target encoders are available. It is primarily intended for user-facing
+        displays such as prediction previews, reports, and inspection utilities.
+
+        Parameters
+        ----------
+        y_data : pandas.Series, pandas.DataFrame, numpy.ndarray, or similar
+            Encoded target values or encoded predictions.
+
+            Expected input patterns include:
+            - single-output prediction preview as a Series or 1D ndarray
+            - multi-output prediction preview as a DataFrame or 2D ndarray
+
+        Returns
+        -------
+        pandas.Series, pandas.DataFrame, numpy.ndarray, or original input
+            Decoded targets or predictions when matching label encoders exist.
+
+            - For single-output classification:
+            returns decoded labels using ``self.target_label_encoder``.
+            - For multi-output classification:
+            returns a DataFrame in which each encoded target column with a stored
+            encoder is inverse transformed independently.
+            - If the current task is not classification, or no relevant encoder is
+            available, the original input is returned unchanged.
+
+        Notes
+        -----
+        - This method does not modify model training data.
+        - It is intended for display and reporting convenience, not for metric
+        computation.
+        - In multi-output workflows, columns that were never encoded remain
+        unchanged.
+        """
+        if self.task != "classification":
+            return y_data
+
+        # ---------- Single-output ----------
+        if not self._is_multi_output(self.cleaned_Y_data):
+            if self.target_label_encoder is None:
+                return y_data
+
+            arr = np.asarray(y_data).ravel()
+            decoded = self.target_label_encoder.inverse_transform(arr)
+
+            if isinstance(y_data, pd.Series):
+                return pd.Series(decoded, index=y_data.index, name=y_data.name)
+
+            return decoded
+
+        # ---------- Multi-output ----------
+        if isinstance(y_data, np.ndarray):
+            y_df = pd.DataFrame(y_data, columns=self.cleaned_Y_data.columns)
+        elif isinstance(y_data, pd.DataFrame):
+            y_df = y_data.copy()
+        else:
+            return y_data
+
+        for col, le in self.target_label_encoders.items():
+            if col in y_df.columns:
+                y_df[col] = le.inverse_transform(np.asarray(y_df[col]))
+
+        return y_df
+
+    # -------------------- Helper: Get target class names --------------------
+    def _get_target_class_names(self, target_col: str | None = None):
+        """
+        Return original class-label names for classification display utilities.
+
+        This helper retrieves stored class names produced during target label
+        encoding so that evaluation reports and confusion matrices can display
+        original category labels instead of encoded integers.
+
+        Parameters
+        ----------
+        target_col : str or None, default=None
+            Target column name for multi-output classification.
+
+            - If ``None``, the method returns the single-output class-name list
+            stored in ``self.target_class_names``.
+            - If a column name is provided, the method returns the corresponding
+            multi-output class-name list from ``self.target_class_name_map``.
+
+        Returns
+        -------
+        list[str] or None
+            Original class-label names for the requested target.
+
+            Returns ``None`` when:
+            - the current task is not classification,
+            - no label encoder was fitted,
+            - or the requested multi-output target column has no stored class map.
+
+        Notes
+        -----
+        - This helper is mainly used by evaluation/reporting code that calls
+        ``classification_report`` or ``confusion_matrix`` with explicit label
+        metadata.
+        """
+        if self.task != "classification":
+            return None
+
+        # ---------- Single-output ----------
+        if target_col is None:
+            return self.target_class_names
+
+        # ---------- Multi-output ----------
+        return self.target_class_name_map.get(target_col)
 
     # -------------------- Helper: Scoring method for multiple output in classification --------------------
     def _build_multioutput_classification_scorer(self, scoring: str):
@@ -506,30 +744,55 @@ class BaseModelConfig(ABC):
         stratify: bool = True,
     ):
         """
-        Split X/Y into train and test sets, with optional stratification.
+        Split cleaned feature and target data into training and test subsets.
+
+        This method prepares classification target encoding when needed, determines
+        whether stratified splitting is applicable, and then performs a
+        ``train_test_split`` on the stored cleaned dataset.
 
         Parameters
         ----------
         test_size : float, default=0.2
-            Fraction of samples used for the test set.
+            Proportion of the dataset reserved for the test set.
 
         split_random_state : int, default=42
-            Seed for reproducibility.
+            Random seed used by ``train_test_split`` for reproducible splitting.
 
         stratify : bool, default=True
-            Whether to stratify by Y labels. Applied only when:
-            - task == "classification"
-            - Y is single-output
+            Whether to apply stratified splitting when supported.
+
+            Stratification is only applied when all of the following are true:
+            - ``self.task == "classification"``
+            - ``stratify is True``
+            - target is single-output
+
+            Multi-output targets are not stratified.
 
         Returns
         -------
         tuple
-            (X_train, X_test, Y_train, Y_test)
+            A 4-item tuple containing:
+
+            - ``self.X_train``
+            - ``self.X_test``
+            - ``self.Y_train``
+            - ``self.Y_test``
+
+        Side Effects
+        ------------
+        - May encode classification targets before splitting.
+        - Stores the split datasets in the instance attributes:
+        ``X_train``, ``X_test``, ``Y_train``, and ``Y_test``.
 
         Notes
         -----
-        - Stratification requires 1D labels. Multi-output targets will ignore stratify.
+        - Classification target encoding is performed before split so that train and
+        test sets share a consistent label mapping.
+        - Regression targets are not encoded.
         """
+        # ---------- Prepare classification target encoding before split ----------
+        self._prepare_classification_target_encoding()
+
         y = self.cleaned_Y_data
         use_stratify = None
 

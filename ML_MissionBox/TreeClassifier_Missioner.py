@@ -153,56 +153,73 @@ class TreeClassifier_Missioner(BaseModelConfig):
         """
         Evaluate the trained classification pipeline on both training and test sets.
 
-        This method generates predictions from the fitted pipeline using
-        ``X_train`` and ``X_test``, then computes evaluation metrics based on
-        whether the target structure is single-output or multi-output.
+        This method generates predictions from the fitted model pipeline and computes
+        evaluation metrics according to whether the current classification problem is
+        single-output or multi-output.
 
-        For single-output classification, the method returns overall train/test
-        accuracy, weighted F1 score, confusion matrix, classification report,
-        and a short prediction preview.
+        Evaluation Behavior
+        -------------------
+        Single-output classification
+            Computes:
+            - training accuracy
+            - test accuracy
+            - training weighted F1 score
+            - test weighted F1 score
+            - test confusion matrix
+            - test classification report
+            - first 10 predicted labels, inverse transformed to original class names
+            when label encoders are available
+            - optional first 10 probability predictions when supported by the model
 
-        For multi-output classification, the method evaluates each target column
-        independently and returns:
-        - per-target train/test accuracy
-        - per-target weighted F1 score
-        - per-target confusion matrix
-        - per-target classification report
-        - macro mean train/test accuracy across targets
-        - macro mean train/test weighted F1 across targets
-        - first 10 rows of prediction preview
+        Multi-output classification
+            Computes:
+            - per-target training accuracy
+            - per-target test accuracy
+            - per-target training weighted F1 score
+            - per-target test weighted F1 score
+            - per-target confusion matrix
+            - per-target classification report
+            - macro-average training accuracy across targets
+            - macro-average test accuracy across targets
+            - macro-average training weighted F1 across targets
+            - macro-average test weighted F1 across targets
+            - first 10 predicted rows, inverse transformed to original class names
+            for encoded target columns when encoders are available
+            - optional probability preview per target when supported
 
         Returns
         -------
         Dict[str, Any]
             Structured evaluation results.
 
-            In single-output mode, the dictionary includes:
-            - ``mode``
-            - ``train_accuracy``
-            - ``test_accuracy``
-            - ``train_f1_weighted``
-            - ``test_f1_weighted``
-            - ``confusion_matrix``
-            - ``classification_report``
-            - ``prediction_preview_first10``
-            - ``feature_importance``
+            Single-output keys
+            ------------------
+            - ``"mode"``
+            - ``"train_accuracy"``
+            - ``"test_accuracy"``
+            - ``"train_f1_weighted"``
+            - ``"test_f1_weighted"``
+            - ``"confusion_matrix"``
+            - ``"classification_report"``
+            - ``"prediction_preview_first10"``
+            - ``"probability_preview_first10"``
 
-            In multi-output mode, the dictionary includes:
-            - ``mode``
-            - ``targets``
-            - ``macro_train_accuracy``
-            - ``macro_test_accuracy``
-            - ``macro_train_f1_weighted``
-            - ``macro_test_f1_weighted``
-            - ``per_target``
-            - ``prediction_preview_first10_rows``
-            - ``feature_importance``
+            Multi-output keys
+            -----------------
+            - ``"mode"``
+            - ``"targets"``
+            - ``"macro_train_accuracy"``
+            - ``"macro_test_accuracy"``
+            - ``"macro_train_f1_weighted"``
+            - ``"macro_test_f1_weighted"``
+            - ``"per_target"``
+            - ``"prediction_preview_first10_rows"``
+            - ``"probability_preview_first10_per_target"``
 
         Raises
         ------
         ValueError
-            If ``self.model_pipeline`` is ``None``, meaning no trained model is
-            available for evaluation.
+            If ``self.model_pipeline`` has not been trained.
 
         Side Effects
         ------------
@@ -213,13 +230,15 @@ class TreeClassifier_Missioner(BaseModelConfig):
 
         Notes
         -----
-        - Multi-output classification metrics are computed separately for each
-          target because sklearn does not provide a single combined confusion
-          matrix or classification report in the same structure.
-        - Feature importance is added on a best-effort basis. If importance
-          extraction fails, ``feature_importance`` is set to ``None``.
-        - In single-output mode, prediction preview is stored as a NumPy array.
-        - In multi-output mode, prediction preview is stored as a DataFrame.
+        - In single-output classification, original class names are used in
+        ``classification_report`` when available through stored label encoders.
+        - In multi-output classification, class names are resolved independently for
+        each target column.
+        - Metric computation is performed on encoded or native numeric targets as
+        stored internally; inverse transformation is used only for display-facing
+        prediction previews.
+        - Probability previews are returned only when the fitted pipeline exposes
+        ``predict_proba()``.
         """
         if self.model_pipeline is None:
             raise ValueError("⚠️ Model pipeline not trained yet ‼️")
@@ -244,12 +263,31 @@ class TreeClassifier_Missioner(BaseModelConfig):
             test_f1 = f1_score(y_true_test, y_pred_test, average="weighted")
 
             # ---------- Confusion matrix and classification report ----------
-            cm = confusion_matrix(y_true_test, y_pred_test)
-            report = classification_report(y_true_test, y_pred_test, digits=4)
+            class_names = self._get_target_class_names()
 
-            self.prediction_preview = np.array(
-                y_pred_test[:10]
-            )  # DataFrame turn into Numpy array
+            if class_names is not None:
+                label_ids = list(range(len(class_names)))
+                cm = confusion_matrix(y_true_test, y_pred_test, labels=label_ids)
+                report = classification_report(
+                    y_true_test,
+                    y_pred_test,
+                    labels=label_ids,
+                    target_names=[str(x) for x in class_names],
+                    digits=4,
+                    zero_division=0,
+                )
+            else:
+                cm = confusion_matrix(y_true_test, y_pred_test)
+                report = classification_report(
+                    y_true_test,
+                    y_pred_test,
+                    digits=4,
+                    zero_division=0,
+                )
+
+            self.prediction_preview = self._inverse_transform_target_labels(
+                pd.Series(y_pred_test[:10])
+            )
 
             # ---------- Record above results ----------
             results = {
@@ -312,16 +350,40 @@ class TreeClassifier_Missioner(BaseModelConfig):
             f1_list_test.append(f1_te)
 
             # ---------- Record each target's accuracy and F1 ----------
+            class_names = self._get_target_class_names(col)
+
+            if class_names is not None:
+                label_ids = list(range(len(class_names)))
+                report = classification_report(
+                    yt_te,
+                    yp_te,
+                    labels=label_ids,
+                    target_names=[str(x) for x in class_names],
+                    digits=4,
+                    zero_division=0,
+                )
+                cm = confusion_matrix(yt_te, yp_te, labels=label_ids)
+            else:
+                report = classification_report(
+                    yt_te,
+                    yp_te,
+                    digits=4,
+                    zero_division=0,
+                )
+                cm = confusion_matrix(yt_te, yp_te)
+
             per_target[col] = {
                 "train_accuracy": acc_tr,
                 "test_accuracy": acc_te,
                 "train_f1_weighted": f1_tr,
                 "test_f1_weighted": f1_te,
-                "classification_report": classification_report(yt_te, yp_te, digits=4),
-                "confusion_matrix": confusion_matrix(yt_te, yp_te),
+                "classification_report": report,
+                "confusion_matrix": cm,
             }
 
-        self.prediction_preview = y_pred_test_df.head(10)  # DataFrame
+        self.prediction_preview = self._inverse_transform_target_labels(
+            y_pred_test_df.head(10)
+        )  # DataFrame
 
         # ---------- Record overall targets' and each target's accuracy and F1 ----------
         results = {
@@ -340,7 +402,7 @@ class TreeClassifier_Missioner(BaseModelConfig):
                 float(np.mean(f1_list_test)) if f1_list_test else None
             ),
             "per_target": per_target,
-            "prediction_preview_first10_rows": y_pred_test_df.head(10),
+            "prediction_preview_first10_rows": self.prediction_preview,
         }
 
         try:

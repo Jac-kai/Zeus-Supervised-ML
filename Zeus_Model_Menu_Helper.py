@@ -106,9 +106,10 @@ def select_from_options(
 
     Behavior
     --------
-    - If the user cancels the numeric input, the function returns ``None``.
-    - If the selected menu number is not found in the provided ``options`` mapping,
-    the function prints a warning and returns ``None``.
+    - If the user cancels the numeric input, the function returns the sentinel
+      string ``"__CANCELLED__"``.
+    - If the selected menu number is not found in the provided ``options``
+      mapping, the function prints a warning and returns ``"__CANCELLED__"``.
     - If the selected menu number is valid, the mapped option value is returned.
 
     Parameters
@@ -122,9 +123,13 @@ def select_from_options(
 
     Returns
     -------
-    object | None
-        The mapped option value corresponding to the selected numeric key if valid;
-        otherwise ``None``.
+    object | str
+        The mapped option value corresponding to the selected numeric key if
+        valid.
+
+        Returns ``"__CANCELLED__"`` when:
+        - the user cancels input,
+        - or the selected numeric menu key is invalid.
 
     Workflow
     --------
@@ -132,26 +137,33 @@ def select_from_options(
     2. Print each numeric menu key and its mapped value
     3. Read the user's numeric selection through ``input_int()``
     4. Validate that the selected key exists in ``options``
-    5. Return the mapped value for the chosen option
+    5. Return the mapped value for the chosen option, or the cancellation
+       sentinel when the workflow is cancelled
 
     Notes
     -----
-    This helper returns the mapped value stored in ``options``, not the numeric menu
-    key entered by the user.
+    This helper returns the mapped value stored in ``options``, not the numeric
+    menu key entered by the user.
+
+    The sentinel string is used so that legitimate mapped values such as
+    ``None`` can still be returned safely without being confused with menu
+    cancellation.
 
     Examples
     --------
-    Select a test-size ratio from a menu::
+    Select a scaler type from a menu::
 
         value = select_from_options(
-            label="Test Size",
-            options={1: 0.2, 2: 0.25, 3: 0.3},
+            label="Scaler Type",
+            options={1: "standard", 2: "minmax", 3: "robust", 4: None},
             default=1,
         )
 
-    Possible result::
+    Possible results::
 
-        0.2
+        "standard"
+        None
+        "__CANCELLED__"
     """
     # ---------- List parameters ----------
     print(f"\n----- {label} -----")
@@ -162,11 +174,11 @@ def select_from_options(
     # ---------- Select parameters ----------
     selected_num = input_int("🕯️ Select option", default=default)
     if selected_num is None:
-        return None
+        return "__CANCELLED__"
 
     if selected_num not in options:
         print("⚠️ Selection is out of range ‼️")
-        return None
+        return "__CANCELLED__"
 
     return options[selected_num]  # Return selected option
 
@@ -241,31 +253,31 @@ def collect_common_training_params(task_type: str) -> dict | None:
     """
     Collect common training parameters shared across Zeus model-training workflows.
 
-    This helper interactively gathers general training settings that are not tied to
-    a specific model implementation. It reads parameter definitions from
+    This helper interactively gathers general training settings that are not tied
+    to a specific model implementation. It reads parameter definitions from
     ``COMMON_PARAM_CONFIG`` and scoring choices from ``SCORING_CONFIG``, then
     collects the selected values through repeated terminal menus.
 
     The collected parameters include test split ratio, split random seed,
-    cross-validation usage, optional CV fold count, and the scoring metric for the
-    specified task type.
+    cross-validation usage, optional CV fold count, and the scoring metric for
+    the specified task type.
 
     Behavior
     --------
     - The helper always collects ``test_size``, ``split_random_state``, and
-    ``use_cv`` first.
+      ``use_cv`` first.
     - If ``use_cv`` is ``True``, the helper additionally collects ``cv_folds``.
     - If ``use_cv`` is ``False``, ``cv_folds`` is recorded as ``None``.
-    - The helper then collects the scoring method using the scoring configuration
-    for the provided task type.
+    - The helper then collects the scoring method using the scoring
+      configuration for the provided task type.
     - If any required selection is cancelled or invalid, the function returns
-    ``None``.
+      ``None``.
 
     Parameters
     ----------
     task_type : str
-        Task category used to choose the scoring menu, typically ``"classifier"``
-        or ``"regressor"``.
+        Task category used to choose the scoring menu, typically
+        ``"classifier"`` or ``"regressor"``.
 
     Returns
     -------
@@ -297,6 +309,10 @@ def collect_common_training_params(task_type: str) -> dict | None:
     This helper only handles shared training parameters. Model-specific keyword
     arguments are collected separately by ``collect_model_train_kwargs()``.
 
+    This workflow treats ``"__CANCELLED__"`` as the menu-cancellation signal so
+    that legitimate parameter values such as ``None`` can still be preserved
+    safely when they are valid configuration values.
+
     Examples
     --------
     Collect common classifier training parameters::
@@ -323,7 +339,7 @@ def collect_common_training_params(task_type: str) -> dict | None:
             options=config["options"],
             default=config["default"],
         )
-        if selected_value is None:
+        if selected_value == "__CANCELLED__":
             return None
         params[param_name] = selected_value
 
@@ -335,7 +351,7 @@ def collect_common_training_params(task_type: str) -> dict | None:
             options=config["options"],
             default=config["default"],
         )
-        if selected_value is None:
+        if selected_value == "__CANCELLED__":
             return None
         params["cv_folds"] = selected_value
     else:
@@ -348,7 +364,7 @@ def collect_common_training_params(task_type: str) -> dict | None:
         options=scoring_config["options"],
         default=scoring_config["default"],
     )
-    if scoring_value is None:
+    if scoring_value == "__CANCELLED__":
         return None
     params["scoring"] = scoring_value
 
@@ -448,18 +464,18 @@ def collect_model_train_kwargs(
     defined configuration order, and dependency-based parameters may be skipped
     automatically through ``should_skip_param()``.
 
-    The helper also applies special menu logic for PCA-related parameters based on
-    the current number of selected feature columns.
+    The helper also applies special menu logic for PCA-related parameters based
+    on the current number of selected feature columns.
 
     Behavior
     --------
     - If the selected model has no model-specific parameter configuration, the
-    function returns an empty dictionary.
+      function returns an empty dictionary.
     - Parameters with unmet dependency conditions are skipped automatically.
     - If ``use_pca`` is encountered and ``feature_count < 2``, PCA is disabled
-    automatically by setting ``use_pca`` to ``False``.
+      automatically by setting ``use_pca`` to ``False``.
     - If ``pca_n_components`` is shown and ``feature_count`` is provided, menu
-    options greater than the current feature count are removed.
+      options greater than the current feature count are removed.
     - If the user cancels any required selection, the function returns ``None``.
     - Otherwise, the collected model-specific keyword arguments are returned.
 
@@ -469,8 +485,8 @@ def collect_model_train_kwargs(
         Registered model name whose model-specific training parameters should be
         collected.
     feature_count : int | None, optional
-        Number of currently selected feature columns. This value is used to adjust
-        PCA-related menu behavior.
+        Number of currently selected feature columns. This value is used to
+        adjust PCA-related menu behavior.
 
     Returns
     -------
@@ -481,7 +497,7 @@ def collect_model_train_kwargs(
     Workflow
     --------
     1. Read the parameter configuration list for ``model_name`` from
-    ``MODEL_PARAM_CONFIG``
+       ``MODEL_PARAM_CONFIG``
     2. Iterate through parameters in configuration order
     3. Skip dependency-controlled parameters when their conditions are not met
     4. Automatically disable PCA if ``feature_count < 2``
@@ -492,19 +508,28 @@ def collect_model_train_kwargs(
 
     Notes
     -----
-    This helper only collects model-specific parameters. Shared training parameters
-    such as ``test_size``, ``split_random_state``, ``use_cv``, ``cv_folds``, and
-    ``scoring`` are collected separately by ``collect_common_training_params()``.
+    This helper only collects model-specific parameters. Shared training
+    parameters such as ``test_size``, ``split_random_state``, ``use_cv``,
+    ``cv_folds``, and ``scoring`` are collected separately by
+    ``collect_common_training_params()``.
 
     PCA validation is handled here to prevent invalid menu selections before the
     training layer is called.
+
+    Menu cancellation is detected through the sentinel value
+    ``"__CANCELLED__"`` so that valid parameter values such as ``None`` can be
+    preserved correctly. This is important for options like:
+
+    - ``scaler_type = None``
+    - ``pca_n_components = None``
+    - other model parameters whose valid mapped value may be ``None``
 
     Examples
     --------
     Collect model-specific arguments for a model with PCA-related settings::
 
         kwargs = collect_model_train_kwargs(
-            model_name="svc",
+            model_name="SVMClassifier",
             feature_count=4,
         )
 
@@ -556,7 +581,7 @@ def collect_model_train_kwargs(
             default=param_config.get("default"),
         )
 
-        if selected_value is None:
+        if selected_value == "__CANCELLED__":
             return None
 
         kwargs[param_config["name"]] = selected_value
