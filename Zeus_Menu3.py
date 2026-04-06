@@ -1189,14 +1189,14 @@ def evaluation_menu(zeus: ZeusEngine):
             svm_model_insight_menu,
         ),
         5: ("📋 SVC Confusion Matrix Plot", svc_confusion_matrix_plot_menu),
-        6: ("🏹 ROC Curve Plot (Classification)", roc_curve_plot_menu),
+        6: ("🏹 ROC Curve Plot (Classification / Binary Only)", roc_curve_plot_menu),
         7: (
-            "🔬 Precision-Recall Curve Plot (Classification)",
+            "🔬 Precision-Recall Curve Plot (Classification / Binary Only)",
             precision_recall_curve_plot_menu,
         ),
         8: ("📈 SVR Regression Diagnostics", svr_regression_diagnostics_menu),
         9: (
-            "🧮 SVC Decision Function Distribution Plot",
+            "🧮 SVC Decision Function Distribution Plot (Binary Only)",
             decision_function_distribution_plot_menu,
         ),
         10: ("📋 KNN Confusion Matrix Plot ", knn_confusion_matrix_plot_menu),

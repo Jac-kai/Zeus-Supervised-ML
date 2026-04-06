@@ -685,46 +685,58 @@ class BaseModelConfig(ABC):
     # -------------------- Helper: Scaler selections --------------------
     def _build_scaler(self, scaler_type: str = "standard"):
         """
-        Build a scaler object based on user selection.
+        Build and return a scaler instance based on the selected scaler type.
+
+        This helper creates a feature-scaling transformer used in the preprocessing
+        pipeline for models that support numeric feature scaling.
 
         Parameters
         ----------
-        scaler_type : str, default="standard"
-            Supported scaler types:
-            - "standard" / "std"   -> StandardScaler
-            - "minmax" / "min_max" -> MinMaxScaler
-            - "robust" / "rbst"    -> RobustScaler
-            - "none" / "no" / "off" -> no scaler (returns None)
+        scaler_type : str or None
+            Selected scaler type.
+
+            Supported values in the current workflow include:
+
+            - ``"standard"``
+            - ``"std"``
+            - ``"minmax"``
+            - ``"min_max"``
+            - ``"robust"``
+            - ``"rbst"``
+            - ``None``
+
+            ``None`` indicates that no scaler should be used.
 
         Returns
         -------
-        Any or None
-            sklearn scaler instance if a valid scaler is selected,
-            otherwise None when scaler_type indicates no scaling.
+        object or None
+            Scaler instance corresponding to the requested scaler type.
+
+            Returns:
+            - ``StandardScaler()`` for ``"standard"`` or ``"std"``
+            - ``MinMaxScaler()`` for ``"minmax"`` or ``"min_max"``
+            - ``RobustScaler()`` for ``"robust"`` or ``"rbst"``
+            - ``None`` when ``scaler_type`` is ``None``
 
         Raises
         ------
         ValueError
-            If scaler_type is not supported.
+            If ``scaler_type`` is not ``None`` and does not match any supported
+            scaler option.
 
         Notes
         -----
-        This helper is intended for model-layer usage together with
-        ``fit_with_grid(..., extra_steps=...)``.
-
-        Example
-        -------
-        A model layer may do:
-
-        extra_steps = []
-        scaler = self._build_scaler(scaler_type)
-        if scaler is not None:
-            extra_steps.append(("scaler", scaler))
+        - This helper is intended for preprocessing-pipeline construction.
+        - Returning ``None`` means the pipeline should skip the scaler step.
+        - The method first checks whether ``scaler_type`` is ``None`` before
+        applying string normalization, so valid ``None`` selections do not raise
+        string-method errors.
         """
+        if scaler_type is None:
+            return None
+        
         scaler_type = scaler_type.lower().strip()
 
-        if scaler_type in ["none", "no", "off"]:
-            return None
         if scaler_type in ["standard", "std"]:
             return StandardScaler()
         if scaler_type in ["minmax", "min_max"]:
@@ -733,7 +745,7 @@ class BaseModelConfig(ABC):
             return RobustScaler()
 
         raise ValueError(
-            "⚠️ scaler_type must be 'standard', 'minmax', 'robust', or 'none' ‼️"
+            "⚠️ scaler_type must be 'standard', 'minmax', 'robust', or 'None' ‼️"
         )
 
     # -------------------- Split train and test dataset --------------------

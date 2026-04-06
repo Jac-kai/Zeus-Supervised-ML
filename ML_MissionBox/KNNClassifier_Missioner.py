@@ -598,21 +598,20 @@ class KNNClassifier_Missioner(BaseModelConfig):
         """
         Validate and prepare binary-classification inputs for KNN probability-based plots.
 
-        This helper prepares the selected dataset split, validates binary-target
-        requirements, and returns the feature matrix, selected target values,
-        preview subset, positive-class score array, and metadata needed by KNN
-        ROC and Precision-Recall plotting methods.
+        This helper centralizes the common validation and input-preparation logic used
+        by KNN binary-classification plotting utilities such as ROC curves and
+        Precision-Recall curves.
 
         Supported Workflows
         -------------------
         1. Single-output binary classification
-        The helper uses the selected train/test split directly and obtains class
-        probabilities from ``self.model_pipeline.predict_proba(...)``.
+        The helper uses the selected train/test split directly and obtains
+        positive-class probabilities from ``self.model_pipeline.predict_proba(...)``.
 
-        2. Multi-output classification with a selected binary target
+        2. Multi-output classification with one selected binary target
         The helper requires ``target_col``. It selects the corresponding target
-        column, validates that it is binary, and then extracts probabilities from
-        the fitted estimator associated with that target.
+        column, validates that the selected target is binary, and then extracts
+        probabilities from the fitted estimator associated with that target.
 
         Dataset Selection
         -----------------
@@ -627,11 +626,8 @@ class KNNClassifier_Missioner(BaseModelConfig):
         probabilities are produced by the selected fitted target estimator.
 
         If the outer pipeline contains preprocessing steps before the final
-        classifier, the helper first applies:
-
-        ``self.model_pipeline[:-1].transform(X_used)``
-
-        and then calls ``predict_proba()`` on the selected target estimator.
+        classifier, the helper first applies preprocessing to the selected feature
+        matrix and then calls ``predict_proba()`` on the selected target estimator.
 
         Parameters
         ----------
@@ -654,8 +650,8 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         Returns
         -------
-        tuple
-            A tuple containing:
+        tuple or None
+            Returns a tuple containing:
 
             - ``X_used`` : pd.DataFrame or np.ndarray
                 Full selected feature matrix.
@@ -672,6 +668,10 @@ class KNNClassifier_Missioner(BaseModelConfig):
             - ``target_col`` : str or None
                 Echoed target-column value.
 
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method prints a user-facing message and stops the plotting workflow
+            gracefully.
+
         Raises
         ------
         ValueError
@@ -682,14 +682,15 @@ class KNNClassifier_Missioner(BaseModelConfig):
             - the requested dataset split is unavailable,
             - the pipeline or selected target estimator does not expose
             ``predict_proba()``,
-            - the selected target is not binary,
             - multi-output classification is detected but ``target_col`` is missing,
             - or ``target_col`` does not exist in the current target data.
 
         Notes
         -----
-        - This helper is intended for KNN probability-based binary plotting
-        utilities such as ROC curves and Precision-Recall curves.
+        - This helper is intended for internal use by KNN binary plotting methods.
+        - Binary-classification validation failure is treated as a supported-but-not-
+        applicable workflow, so the method returns ``None`` instead of raising an
+        exception.
         - The returned positive-class score is taken from ``proba[:, 1]`` after
         confirming that the selected target is binary.
         - In multi-output classification, only the selected binary target is used.
@@ -721,9 +722,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
         if not self._is_multi_output(y_used):
             classes = np.unique(y_used)
             if len(classes) != 2:
-                raise ValueError(
-                    "⚠️ Precision-Recall plot requires binary classification ‼️"
-                )
+                print("⚠️ This plot currently supports binary classification only ‼️")
+                print(f"🔔 Current target has {len(classes)} classes, not 2.")
+                return None
 
             proba = self.model_pipeline.predict_proba(X_used)
             y_score = proba[:, 1]
@@ -749,9 +750,9 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         classes = np.unique(y_target)
         if len(classes) != 2:
-            raise ValueError(
-                f"⚠️ target_col '{target_col}' is not binary classification ‼️"
-            )
+            print("⚠️ This plot currently supports binary classification only ‼️")
+            print(f"🔔 Current target has {len(classes)} classes, not 2.")
+            return None
 
         clf = self.model_pipeline.named_steps.get(self.step_name, self.model_pipeline)
 
@@ -814,19 +815,22 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         Returns
         -------
-        Dict[str, Any]
-            Dictionary containing:
+        dict or None
+            Returns a dictionary containing:
 
             - ``"saved_path"`` : str
                 Full saved file path.
             - ``"roc_auc"`` : float
                 Area under the ROC curve.
 
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method exits gracefully without generating a plot.
+
         Raises
         ------
         ValueError
-            Propagated from ``_get_binary_knn_plot_inputs()`` when the task or
-            selected target does not satisfy binary ROC plotting requirements.
+            Propagated from ``_get_binary_knn_plot_inputs()`` when required inputs,
+            dataset selection, pipeline state, or probability support are invalid.
 
         Side Effects
         ------------
@@ -844,13 +848,16 @@ class KNNClassifier_Missioner(BaseModelConfig):
         - In multi-output classification, the ROC curve is generated only for the
         selected binary target.
         """
-        _, y_used, _, y_score, classes, dataset, target_col = (
-            self._get_binary_knn_plot_inputs(
-                dataset=dataset,
-                preview_rows=10,
-                target_col=target_col,
-            )
+        # ---------- Get binary dataset ----------
+        binary_inputs = self._get_binary_knn_plot_inputs(
+            dataset=dataset,
+            preview_rows=10,
+            target_col=target_col,
         )
+        if binary_inputs is None:
+            return None
+
+        _, y_used, _, y_score, classes, dataset, target_col = binary_inputs
 
         y_true_arr = np.asarray(y_used)
         pos_label = classes[1]
@@ -937,20 +944,22 @@ class KNNClassifier_Missioner(BaseModelConfig):
 
         Returns
         -------
-        Dict[str, Any]
-            Dictionary containing:
+        dict or None
+            Returns a dictionary containing:
 
             - ``"saved_path"`` : str
                 Full saved file path.
             - ``"pr_auc"`` : float
                 Area under the Precision-Recall curve.
 
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method exits gracefully without generating a plot.
+
         Raises
         ------
         ValueError
-            Propagated from ``_get_binary_knn_plot_inputs()`` when the task or
-            selected target does not satisfy binary Precision-Recall plotting
-            requirements.
+            Propagated from ``_get_binary_knn_plot_inputs()`` when required inputs,
+            dataset selection, pipeline state, or probability support are invalid.
 
         Side Effects
         ------------
@@ -968,13 +977,16 @@ class KNNClassifier_Missioner(BaseModelConfig):
         - In multi-output classification, the PR curve is generated only for the
         selected binary target.
         """
-        _, y_used, _, y_score, classes, dataset, target_col = (
-            self._get_binary_knn_plot_inputs(
-                dataset=dataset,
-                preview_rows=10,
-                target_col=target_col,
-            )
+        # ---------- Get binary dataset ----------
+        binary_inputs = self._get_binary_knn_plot_inputs(
+            dataset=dataset,
+            preview_rows=10,
+            target_col=target_col,
         )
+        if binary_inputs is None:
+            return None
+
+        _, y_used, _, y_score, classes, dataset, target_col = binary_inputs
 
         y_true_arr = np.asarray(y_used)
         pos_label = classes[1]

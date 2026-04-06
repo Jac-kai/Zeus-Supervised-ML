@@ -875,28 +875,28 @@ class SVMClassifier_Missioner(BaseModelConfig):
 
         Returns
         -------
-        tuple
-            A tuple containing:
+        tuple or None
+            Returns a tuple containing:
 
-            - X_used : pd.DataFrame or np.ndarray
+            - ``X_used`` : pd.DataFrame or np.ndarray
                 Full feature matrix for the selected dataset split.
-            - y_used : pd.Series, pd.DataFrame, or np.ndarray
+            - ``y_used`` : pd.Series, pd.DataFrame, or np.ndarray
                 Target labels used for plotting.
-
-                - For single-output classification, this is the full single target.
-                - For multi-output classification, this is the selected target column
-                only.
-            - X_preview : pd.DataFrame or np.ndarray
+            - ``X_preview`` : pd.DataFrame or np.ndarray
                 First ``preview_rows`` rows of ``X_used``.
-            - y_score : np.ndarray
+            - ``y_score`` : np.ndarray
                 Decision-function scores corresponding to the selected target.
-            - classes : np.ndarray
+            - ``classes`` : np.ndarray
                 Sorted unique class labels detected in the selected target.
-            - dataset : str
+            - ``dataset`` : str
                 Normalized dataset label, either ``"train"`` or ``"test"``.
-            - target_col : str or None
+            - ``target_col`` : str or None
                 Selected target column name for multi-output classification, otherwise
                 ``None`` for single-output classification.
+
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method prints a user-facing message and stops the plotting workflow
+            gracefully.
 
         Raises
         ------
@@ -908,12 +908,14 @@ class SVMClassifier_Missioner(BaseModelConfig):
             - the pipeline does not contain the classifier step,
             - multi-output classification is detected but ``target_col`` is missing,
             - ``target_col`` does not exist in the selected target columns,
-            - the selected target is not binary,
-            - the relevant estimator does not expose ``decision_function()``.
+            - or the relevant estimator does not expose ``decision_function()``.
 
         Notes
         -----
         - This helper is intended for internal use only.
+        - Binary-classification validation failure is treated as a supported-but-not-
+        applicable workflow, so the method returns ``None`` instead of raising an
+        exception.
         - In multi-output classification, binary plotting is performed for one target
         at a time.
         - For multi-output pipelines, the helper extracts the fitted estimator from
@@ -952,10 +954,10 @@ class SVMClassifier_Missioner(BaseModelConfig):
         if not self._is_multi_output(y_used):
             classes = np.unique(y_used)
             if len(classes) != 2:
-                raise ValueError(
-                    "⚠️  This plot currently supports binary classification only ‼️"
-                )
-
+                print("⚠️ This plot currently supports binary classification only ‼️")
+                print(f"🔔 Current target has {len(classes)} classes, not 2.")
+                return None
+            
             if not hasattr(self.model_pipeline, "decision_function"):
                 raise ValueError("⚠️  Pipeline has no decision_function() ‼️")
 
@@ -985,9 +987,9 @@ class SVMClassifier_Missioner(BaseModelConfig):
         # ---------- Check binary values in target column ----------
         classes = np.unique(y_target)
         if len(classes) != 2:
-            raise ValueError(
-                f"⚠️  target_col '{target_col}' is not binary classification ‼️"
-            )
+            print("⚠️ This plot currently supports binary classification only ‼️")
+            print(f"🔔 Current target has {len(classes)} classes, not 2.")
+            return None
 
         if not hasattr(clf, "estimators_"):
             raise ValueError("⚠️  Multi-output classifier has no fitted estimators_ ‼️")
@@ -1026,8 +1028,8 @@ class SVMClassifier_Missioner(BaseModelConfig):
         - single-output binary classification, or
         - multi-output classification when a binary ``target_col`` is specified
 
-        The plot helps assess whether the classifier separates the two classes well in
-        decision-score space. Greater separation between class-specific score
+        The plot helps assess whether the classifier separates the two classes well
+        in decision-score space. Greater separation between class-specific score
         distributions usually indicates stronger discrimination.
 
         Parameters
@@ -1049,25 +1051,30 @@ class SVMClassifier_Missioner(BaseModelConfig):
             Output filename for the saved image.
 
             - If provided, that name is used directly.
-            - If None, an automatic filename is generated based on model type,
+            - If ``None``, an automatic filename is generated based on model type,
             dataset split, and optional target column.
 
         target_col : str or None, default=None
             Target column name used only for multi-output classification.
 
             - Ignored for single-output classification
-            - Required when plotting a binary target from a multi-output classifier
+            - Required when plotting a binary decision-function distribution for a
+            target inside a multi-output classifier
 
         Returns
         -------
-        str
-            Full saved file path of the generated plot image.
+        str or None
+            Full saved file path when the plot is generated successfully.
+
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method exits gracefully without generating a plot.
 
         Raises
         ------
         ValueError
-            Propagated from ``_get_binary_svc_plot_inputs()`` when the task or
-            selected target does not satisfy binary SVC plotting requirements.
+            Propagated from ``_get_binary_svc_plot_inputs()`` when required inputs,
+            dataset selection, pipeline state, classifier-step lookup, or
+            decision-function support are invalid.
 
         Side Effects
         ------------
@@ -1077,20 +1084,22 @@ class SVMClassifier_Missioner(BaseModelConfig):
 
         Notes
         -----
-        - A vertical reference line is drawn at decision score ``0.0``, which is the
-        standard separating threshold for binary SVC decision scores.
-        - In multi-output classification, the plot is generated for the selected
-        binary target only.
-        - Histogram labels are based on the true class values in the selected target.
+        - The plot is intended for binary classification only.
+        - In multi-output classification, the distribution is generated only for the
+        selected binary target.
+        - Decision scores are grouped by true class labels and plotted as overlapping
+        histograms.
         """
         # ---------- Get binary dataset  ----------
-        _, y_used, _, y_score, classes, dataset, target_col = (
-            self._get_binary_svc_plot_inputs(
-                dataset=dataset,
-                preview_rows=10,
-                target_col=target_col,
-            )
+        binary_inputs = self._get_binary_svc_plot_inputs(
+            dataset=dataset,
+            preview_rows=10,
+            target_col=target_col,
         )
+        if binary_inputs is None:
+            return None
+
+        _, y_used, _, y_score, classes, dataset, target_col = binary_inputs
 
         # ---------- Turn true values into array format ----------
         y_true_arr = np.asarray(y_used)
@@ -1143,14 +1152,11 @@ class SVMClassifier_Missioner(BaseModelConfig):
         Plot and save the ROC curve for binary SVC classification.
 
         This method computes and plots the Receiver Operating Characteristic (ROC)
-        curve using decision-function scores rather than predicted class labels.
-        It supports:
+        curve using decision-function scores returned by the fitted SVC pipeline or
+        selected target estimator. It supports:
 
         - single-output binary classification, or
         - multi-output classification when a binary ``target_col`` is specified
-
-        The ROC curve provides a threshold-independent view of classifier ranking and
-        class-separation performance.
 
         Parameters
         ----------
@@ -1165,31 +1171,35 @@ class SVMClassifier_Missioner(BaseModelConfig):
             Output filename for the saved image.
 
             - If provided, that name is used directly.
-            - If None, an automatic filename is generated based on model type,
+            - If ``None``, an automatic filename is generated based on model type,
             dataset split, and optional target column.
 
         target_col : str or None, default=None
             Target column name used only for multi-output classification.
 
             - Ignored for single-output classification
-            - Required when plotting ROC for a binary target from a multi-output
-            classifier
+            - Required when plotting a ROC curve for a binary target from a
+            multi-output classifier
 
         Returns
         -------
-        Dict[str, Any]
-            Dictionary containing:
+        dict or None
+            Returns a dictionary containing:
 
             - ``"saved_path"`` : str
                 Full saved file path.
             - ``"roc_auc"`` : float
                 Area under the ROC curve.
 
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method exits gracefully without generating a plot.
+
         Raises
         ------
         ValueError
-            Propagated from ``_get_binary_svc_plot_inputs()`` when the task or
-            selected target does not satisfy binary ROC plotting requirements.
+            Propagated from ``_get_binary_svc_plot_inputs()`` when required inputs,
+            dataset selection, pipeline state, classifier-step lookup, or
+            decision-function support are invalid.
 
         Side Effects
         ------------
@@ -1201,19 +1211,22 @@ class SVMClassifier_Missioner(BaseModelConfig):
         -----
         - The positive class is chosen as ``classes[1]`` after sorting the unique
         labels of the selected target.
-        - The diagonal reference line represents random guessing performance.
-        - A higher ROC AUC indicates better ranking and class-separation ability.
+        - The diagonal reference line represents random-guessing performance.
+        - A higher ROC AUC indicates better ranking and binary class-separation
+        ability.
         - In multi-output classification, the ROC curve is generated only for the
         selected binary target.
         """
         # ---------- Get binary dataset ----------
-        _, y_used, _, y_score, classes, dataset, target_col = (
-            self._get_binary_svc_plot_inputs(
-                dataset=dataset,
-                preview_rows=10,
-                target_col=target_col,
-            )
+        binary_inputs = self._get_binary_svc_plot_inputs(
+            dataset=dataset,
+            preview_rows=10,
+            target_col=target_col,
         )
+        if binary_inputs is None:
+            return None
+
+        _, y_used, _, y_score, classes, dataset, target_col = binary_inputs
 
         # ---------- Record ROC-AUC ----------
         y_true_arr = np.asarray(y_used)
@@ -1265,13 +1278,14 @@ class SVMClassifier_Missioner(BaseModelConfig):
         Plot and save the Precision-Recall curve for binary SVC classification.
 
         This method computes and plots the Precision-Recall (PR) curve using
-        decision-function scores. It supports:
+        decision-function scores returned by the fitted SVC pipeline or selected
+        target estimator. It supports:
 
         - single-output binary classification, or
         - multi-output classification when a binary ``target_col`` is specified
 
-        The PR curve is especially informative for imbalanced binary classification
-        problems because it focuses directly on positive-class retrieval quality.
+        The PR curve is especially useful for imbalanced binary classification
+        because it focuses directly on positive-class retrieval quality.
 
         Parameters
         ----------
@@ -1286,7 +1300,7 @@ class SVMClassifier_Missioner(BaseModelConfig):
             Output filename for the saved image.
 
             - If provided, that name is used directly.
-            - If None, an automatic filename is generated based on model type,
+            - If ``None``, an automatic filename is generated based on model type,
             dataset split, and optional target column.
 
         target_col : str or None, default=None
@@ -1298,20 +1312,23 @@ class SVMClassifier_Missioner(BaseModelConfig):
 
         Returns
         -------
-        Dict[str, Any]
-            Dictionary containing:
+        dict or None
+            Returns a dictionary containing:
 
             - ``"saved_path"`` : str
                 Full saved file path.
             - ``"pr_auc"`` : float
                 Area under the Precision-Recall curve.
 
+            Returns ``None`` when the selected target is not binary. In that case,
+            the method exits gracefully without generating a plot.
+
         Raises
         ------
         ValueError
-            Propagated from ``_get_binary_svc_plot_inputs()`` when the task or
-            selected target does not satisfy binary Precision-Recall plotting
-            requirements.
+            Propagated from ``_get_binary_svc_plot_inputs()`` when required inputs,
+            dataset selection, pipeline state, classifier-step lookup, or
+            decision-function support are invalid.
 
         Side Effects
         ------------
@@ -1323,8 +1340,7 @@ class SVMClassifier_Missioner(BaseModelConfig):
         -----
         - The positive class is chosen as ``classes[1]`` after sorting the unique
         labels of the selected target.
-        - PR curves are often more sensitive than ROC curves under heavy class
-        imbalance because they emphasize positive-class retrieval behavior.
+        - PR curves are often more sensitive than ROC curves under class imbalance.
         - The returned AUC is computed over the recall-precision curve.
         - In multi-output classification, the PR curve is generated only for the
         selected binary target.
