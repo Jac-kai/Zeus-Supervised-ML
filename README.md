@@ -113,6 +113,17 @@ These tools help users better understand model performance, compare classificati
 
 ---
 
+### Binary-only plot note
+Some classifier diagnostic plots currently support **binary classification only**, including:
+
+- ROC Curve
+- Precision-Recall Curve
+- Decision Function Distribution (SVC classification)
+
+If the selected target contains more than two classes, Zeus will display a user-facing message and stop the plotting workflow gracefully instead of treating it as a system error.
+
+---
+
 ## Training Workflow Notes
 
 Zeus includes menu-level validation to block known invalid preprocessing combinations before training begins.
