@@ -1072,6 +1072,20 @@ class BaseModelConfig(ABC):
         - multi-output regression -> use a base-layer scorer built from the
         selected regression scoring name
 
+        Compact CV reporting policy:
+
+        - The compact report is generated from the top-ranked rows of
+        ``GridSearchCV.cv_results_``.
+        - Base report fields include:
+        ``rank_test_score``, ``mean_test_score``, ``std_test_score``, and
+        ``params``.
+        - If the current CV run does not use a real parameter grid, additional
+        fields may be added to the compact report, including:
+        ``param_grid_used`` and ``fixed_params``.
+        - ``fixed_params`` records the effective fixed training settings used for
+        the current CV run, such as scoring, fold count, encoder selection,
+        extra pipeline step names, and the estimator representation.
+
         This method keeps two levels of CV result tracking:
 
         1. ``self.cv_search_report``
@@ -1149,14 +1163,29 @@ class BaseModelConfig(ABC):
 
             # ---------- CV report saved as CSV file ----------
             cv_results_df = pd.DataFrame(gs.cv_results_)
-            top_cv_results = (
-                cv_results_df[
-                    ["rank_test_score", "mean_test_score", "std_test_score", "params"]
-                ]
-                .sort_values("rank_test_score")
-                .head(5)
-                .to_dict(orient="records")
-            )
+
+            top_cv_df = cv_results_df[
+                ["rank_test_score", "mean_test_score", "std_test_score", "params"]
+            ].sort_values("rank_test_score").head(5).copy()
+
+            # If this CV run did not use a real param grid, record fixed training settings
+            if not param_grid:
+                fixed_params = {
+                    "step_name": self.step_name,
+                    "scoring": scoring,
+                    "cv_folds": cv_folds,
+                    "split_random_state": split_random_state,
+                    "cat_encoder": cat_encoder,
+                    "extra_steps": [name for name, _ in (extra_steps or [])],
+                    "base_model": repr(base_model),
+                }
+
+                top_cv_df["param_grid_used"] = False
+                top_cv_df["fixed_params"] = [fixed_params] * len(top_cv_df)
+            else:
+                top_cv_df["param_grid_used"] = True
+
+            top_cv_results = top_cv_df.to_dict(orient="records")
 
             self.cv_search_report = {
                 "use_cv": use_cv,
@@ -1205,13 +1234,21 @@ class BaseModelConfig(ABC):
 
         Notes
         -----
-        The saved CSV currently contains the top-ranked CV result rows with these
-        fields:
+        The saved CSV contains the top-ranked CV result rows with these base fields:
 
         - ``rank_test_score``
         - ``mean_test_score``
         - ``std_test_score``
         - ``params``
+
+        Additional fields may also be included depending on the CV configuration,
+        such as:
+
+        - ``param_grid_used``
+        - ``fixed_params``
+
+        When CV is run without a real parameter grid, ``fixed_params`` records the
+        effective fixed training settings used for that CV run.
 
         The filename format is:
 
@@ -1220,9 +1257,9 @@ class BaseModelConfig(ABC):
         where ``model_name`` comes from ``self.input_model_type``. If that value is
         not available, ``"model"`` is used as the fallback name.
 
-        This method exports the compact summary report only. The full raw GridSearchCV
-        result dictionary remains available separately in ``self.cv_results_raw`` when
-        CV was used.
+        This method exports the compact summary report only. The full raw
+        ``GridSearchCV.cv_results_`` dictionary remains available separately in
+        ``self.cv_results_raw`` when CV was used.
         """
         if not self.cv_search_report:
             print("⚠️ No CV search report available to save ‼️")
